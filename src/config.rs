@@ -1,43 +1,21 @@
+use serde::Deserialize;
 use std::{env, fs, io};
 
-use serde::Deserialize;
+#[path = "./key.rs"]
+mod key;
 
-const CONFIG_TMPL: &str = "
-[[hosts]]
-name=\"local\"
-host=\"127.0.0.1\"
-username=\"foo\"
-password=\"bar\"
-ssh_file=\"(change_with_your_path)\"
-
-[[sync]]
-host=\"local\"
-src=\"(change_with_your_path)\"
-dest=\"(change_with_your_path)\"
-";
+const CONFIG_TMPL: &str = include_str!("./static/config_tmpl.toml");
 
 #[derive(Deserialize, Debug)]
-pub struct HostData {
+pub struct TrusteeData {
     pub name: String,
     pub host: String,
-    pub username: Option<String>,
-    pub password: Option<String>,
-    pub ssh_file: Option<String>,
-}
-
-#[derive(Deserialize, Debug)]
-pub struct SyncData {
-    pub host: String,
-    pub src: String,
-    pub dest: String,
+    pub key: String,
 }
 
 #[derive(Deserialize, Debug)]
 pub struct Config {
-    pub hosts: Vec<HostData>,
-
-    #[serde(rename = "sync")]
-    pub sync_list: Vec<SyncData>,
+    pub trustees: Vec<TrusteeData>,
 }
 
 pub fn fetch_config() -> io::Result<Config> {
@@ -49,7 +27,10 @@ pub fn fetch_config() -> io::Result<Config> {
 
     // file doesn't exist so create it
     if !fs::exists(&config_file_path)? {
-        let result = fs::write(&config_file_path, CONFIG_TMPL);
+        let result = fs::write(
+            &config_file_path,
+            CONFIG_TMPL.replace("{{key}}", key::get_random_key(20).as_str()),
+        );
         match result {
             Err(err) => {
                 return Err(err);
