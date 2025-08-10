@@ -33,6 +33,7 @@ mod tests {
             let words: Vec<&str> = key.split(" ").collect();
             assert_eq!(words.len(), i as usize);
             for word in words {
+                assert!(!word.is_empty());
                 assert!(word.chars().all(char::is_alphabetic), "other than alpha");
             }
         }
