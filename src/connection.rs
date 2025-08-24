@@ -1,71 +1,87 @@
-use std::error::Error;
+use std::{path::Path, str::FromStr};
+
+use crate::*;
 
 use iroh::{
-    Endpoint, Watcher,
-    endpoint::{self},
+    Endpoint, NodeAddr, NodeId, SecretKey,
     protocol::{self},
 };
+use iroh_blobs::{ALPN, BlobsProtocol, store::fs::FsStore};
 
-const ALPN: &[u8] = b"fsys/0";
-
-pub async fn start_accept_side() -> Result<protocol::Router, endpoint::BindError> {
-    let endpoint = Endpoint::builder().discovery_n0().bind().await?;
-    let router = protocol::Router::builder(endpoint)
-        .accept(ALPN, Echo)
-        .spawn();
-
-    Ok(router)
+pub struct Connection {
+    is_open: bool,
+    router: protocol::Router,
 }
 
-pub async fn close_accept_side(router: protocol::Router) -> Result<(), Box<dyn Error>> {
-    router.shutdown().await?;
+impl Connection {
+    pub async fn new(raw_secret_key: &[u8; 32], store_path: &Path) -> Result<Self> {
+        let secret_key = SecretKey::from_bytes(raw_secret_key);
 
-    Ok(())
-}
+        let endpoint = Endpoint::builder()
+            .secret_key(secret_key)
+            // TODO: what about discovery over custom relay and local?
+            .discovery_n0()
+            // TODO: local is not working
+            // .add_discovery(discovery::mdns::MdnsDiscovery::builder())
+            .bind()
+            .await
+            .unwrap();
 
-pub async fn start_connect_side(
-    router: &protocol::Router,
-) -> Result<(Endpoint, endpoint::Connection), Box<dyn Error>> {
-    let node_addr = router.endpoint().node_addr().initialized().await;
-    let endpoint = Endpoint::builder().discovery_n0().bind().await?;
-    let conn = endpoint.connect(node_addr, ALPN).await?;
-    let (mut send, mut recv) = conn.open_bi().await?;
+        // setup the protocol for the blobs back and forth
+        // should use a file system on temporary dir
+        // sending a file with gbs will fill up the ram and crash
+        // let store = MemStore::new();
+        let store = FsStore::load(store_path).await.unwrap();
+        let blobs = BlobsProtocol::new(&store, endpoint.clone(), None);
 
-    send.write_all(b"Hello world").await?;
-    send.finish()?;
+        let router = protocol::Router::builder(endpoint.clone())
+            .accept(iroh_blobs::ALPN, blobs)
+            .spawn();
 
-    let response = recv.read_to_end(1000).await?;
-    assert_eq!(&response, b"Hello world");
+        Ok(Self {
+            is_open: true,
+            router,
+        })
+    }
 
-    Ok((endpoint, conn))
-}
+    pub fn get_node_id(&self) -> String {
+        self.router.endpoint().node_id().to_string()
+    }
 
-pub async fn close_connect_side(
-    conn: (Endpoint, endpoint::Connection),
-) -> Result<(), Box<dyn Error>> {
-    let (endpoint, conn) = conn;
+    pub async fn connect_to_node(&self, node_id: &str) -> Result<()> {
+        let node = NodeId::from_str(node_id);
+        let node_addr = NodeAddr::new(node.unwrap());
 
-    conn.close(0u32.into(), b"bye!");
+        let conn = self
+            .router
+            .endpoint()
+            .connect(node_addr, ALPN)
+            .await
+            .unwrap();
+        let (mut send, mut recv) = conn.open_bi().await.unwrap();
 
-    endpoint.close().await;
+        // test connection
+        send.write_all(b"open_conn").await.unwrap();
+        send.finish().unwrap();
 
-    Ok(())
-}
+        let response = recv.read_to_end(1000).await.unwrap();
+        assert_eq!(&response, b"open_conn");
 
-#[derive(Debug, Clone)]
-struct Echo;
+        // after all done, close client
+        conn.close(0u32.into(), b"close_request");
 
-impl protocol::ProtocolHandler for Echo {
-    async fn accept(&self, connection: endpoint::Connection) -> Result<(), protocol::AcceptError> {
-        let node_id = connection.remote_node_id()?;
-        println!("accepted connection from {node_id}");
+        Ok(())
+    }
 
-        let (mut send, mut recv) = connection.accept_bi().await?;
-        let bytes_sent = tokio::io::copy(&mut recv, &mut send).await?;
-        println!("copied over {bytes_sent} byte(s)");
+    pub async fn close(&mut self) -> Result<()> {
+        if !self.is_open {
+            return Ok(());
+        }
 
-        send.finish()?;
-        connection.closed().await;
+        self.is_open = false;
+
+        self.router.endpoint().close().await;
+        self.router.shutdown().await.unwrap();
 
         Ok(())
     }

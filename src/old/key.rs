@@ -1,5 +1,4 @@
-use iroh::SecretKey;
-use rand::Rng;
+use rand::prelude::*;
 
 const EFF_DICE_LIST: &str = include_str!("./static/eff_large_wordlist.txt");
 
@@ -7,11 +6,11 @@ pub fn get_random_key(word_count: u8) -> String {
     let mut str = "".to_string();
     let list: Vec<&str> = EFF_DICE_LIST.lines().collect();
 
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
 
     // TODO: there are better ways to do this
     for _ in 0..word_count {
-        let word_index: usize = rng.gen_range(0..list.len());
+        let word_index: usize = rng.random_range(0..list.len());
         if !str.is_empty() {
             str += " ";
         }
@@ -23,10 +22,6 @@ pub fn get_random_key(word_count: u8) -> String {
     }
 
     str
-}
-
-pub fn generate_node_secret_key() -> SecretKey {
-    SecretKey::generate(rand::rngs::OsRng)
 }
 
 #[cfg(test)]
