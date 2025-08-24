@@ -1,5 +1,6 @@
 pub type Result<T> = core::result::Result<T, Error>;
 
+// TODO: implement the "?"
 #[derive(Debug)]
 pub enum Error {
     Unknown, // TODO: ...

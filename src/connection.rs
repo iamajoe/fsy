@@ -34,6 +34,8 @@ impl Connection {
         let store = FsStore::load(store_path).await.unwrap();
         let blobs = BlobsProtocol::new(&store, endpoint.clone(), None);
 
+        // TODO: how can i check for the allowed list?
+        //       how do i know that the user can actually connect?
         let router = protocol::Router::builder(endpoint.clone())
             .accept(iroh_blobs::ALPN, blobs)
             .spawn();
