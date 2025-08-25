@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+crossterm = "0.29.0"
 iroh = "0.91.1"
 iroh-blobs = "0.93.0"
 rand = "0.8.5"

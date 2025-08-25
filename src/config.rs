@@ -12,26 +12,37 @@ pub struct LocalNodeData {
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct NodeData {
-    pub name: String,
+    pub name: String, // just something descritive for the user
     pub node_id: String,
-    pub key: String,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub enum TargetMode {
+    #[serde(rename = "push")]
+    Push,
+    #[serde(rename = "push-pull")]
+    PushPull,
+    #[serde(rename = "pull")]
+    Pull,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct FileSyncTarget {
-    pub mode: String, // TODO: should be an enum: push, push-pull, pull
-    pub trustee: String,
+    pub mode: TargetMode,
+    pub trustee_name: String, // trustee name, the descritive
+    pub key: String,          // used to check if the user has access to target
 }
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct FileSync {
-    pub name: String,
-    pub path: String,
-    pub target: Vec<FileSyncTarget>,
+    pub path: String, // path for the file / folder
+    pub targets: Vec<FileSyncTarget>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Config {
+    #[serde(skip)]
+    pub config_path: OsString,
     pub local: LocalNodeData,
     pub trustees: Vec<NodeData>,
     pub file_syncs: Vec<FileSync>,
@@ -42,6 +53,7 @@ impl Default for Config {
         let raw_secret_key = key::generate_node_secret_key();
 
         Self {
+            config_path: ".config".into(),
             local: LocalNodeData {
                 public_key: raw_secret_key.public().to_string(),
                 secret_key: raw_secret_key.secret().to_bytes(),
@@ -54,29 +66,57 @@ impl Default for Config {
 
 impl Config {
     pub fn new(user_relative_path: &str) -> Result<Self> {
-        // being empty we want to create our own config
-        let mut user_path = user_relative_path;
-        if user_path.is_empty() {
-            user_path = ".config";
-        }
-
-        let config_path = get_config_path(user_path).unwrap();
-        dbg!(&config_path);
+        let config_path = get_config_path(user_relative_path).unwrap();
 
         // create the file if not there
         if !fs::exists(&config_path).unwrap() {
-            return Self::default().save(user_path); // we want to save the file
+            let s = Self {
+                config_path,
+                ..Default::default()
+            };
+            return s.save(); // we want to save the file
         }
 
         // read the file now
-        let content = fs::read_to_string(config_path).unwrap();
-        let parsed: Config = toml::from_str(&content).unwrap();
+        let content = fs::read_to_string(&config_path).unwrap();
+        let mut parsed: Config = toml::from_str(&content).unwrap();
+        // update with the path since we are not serializing it into the file
+        parsed.config_path = config_path;
+
+        // NOTE: we regenerate then so we can use for testing for example
+        //       only check if config exists because we are already generating
+        //       when it is a new config file
+        let should_generate_key = std::env::var("GENERATE_KEY")
+            .unwrap_or("".to_string())
+            .eq("true");
+        if should_generate_key {
+            // NOTE: we regenerate then so we can use for testing for example
+            //       only check if config exists because we are already generating
+            //       when it is a new config file
+            let raw_secret_key = key::generate_node_secret_key();
+            parsed.local.public_key = raw_secret_key.public().to_string();
+            parsed.local.secret_key = raw_secret_key.secret().to_bytes();
+        }
+
         Ok(parsed)
     }
 
-    pub fn save(self, user_relative_path: &str) -> Result<Self> {
-        let config_path = get_config_path(user_relative_path).unwrap();
-        let dir_name = match std::path::Path::new(&config_path).parent() {
+    pub fn reload_filesyncs(&mut self) {
+        let content = fs::read_to_string(&self.config_path).unwrap();
+        let parsed: Config = toml::from_str(&content).unwrap();
+
+        self.file_syncs = parsed.file_syncs;
+    }
+
+    pub fn reload_trustees(&mut self) {
+        let content = fs::read_to_string(&self.config_path).unwrap();
+        let parsed: Config = toml::from_str(&content).unwrap();
+
+        self.trustees = parsed.trustees;
+    }
+
+    pub fn save(self) -> Result<Self> {
+        let dir_name = match std::path::Path::new(&self.config_path).parent() {
             Some(p) => p,
             // TODO: handle the error
             None => {
@@ -98,7 +138,7 @@ impl Config {
         };
 
         // write the config now
-        if let Err(_e) = std::fs::write(&config_path, config_content) {
+        if let Err(_e) = std::fs::write(&self.config_path, config_content) {
             return Err(Error::Unknown);
         }
 
@@ -107,10 +147,16 @@ impl Config {
 }
 
 fn get_config_path(user_relative_path: &str) -> Result<OsString> {
+    // being empty we want to create our own config
+    let mut user_path = user_relative_path;
+    if user_path.is_empty() {
+        user_path = ".config";
+    }
+
     match std::env::var_os("HOME") {
         // handle home case
         Some(p) => Ok(Path::new(&p)
-            .join(user_relative_path)
+            .join(user_path)
             .join(CONFIG_FILE_NAME)
             .into_os_string()),
 
@@ -119,7 +165,7 @@ fn get_config_path(user_relative_path: &str) -> Result<OsString> {
             Ok(p) => Ok(p
                 .parent()
                 .unwrap()
-                .join(user_relative_path)
+                .join(user_path)
                 .join(CONFIG_FILE_NAME)
                 .into_os_string()),
             // TODO: handle the error

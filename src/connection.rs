@@ -40,6 +40,12 @@ impl Connection {
             .accept(iroh_blobs::ALPN, blobs)
             .spawn();
 
+        // TODO: need some sort of protocol for communication so that
+        //       node can request a file
+        //       need also to check locally if it can pull
+        //       if all good, creates a blob ticket for the other to
+        //       download.
+
         Ok(Self {
             is_open: true,
             router,
