@@ -16,7 +16,7 @@ pub struct NodeData {
     pub node_id: String,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
 pub enum TargetMode {
     #[serde(rename = "push")]
     Push,
