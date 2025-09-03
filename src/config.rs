@@ -1,6 +1,8 @@
-use crate::*;
+use crate::{Result, Error, key};
 use serde::{Deserialize, Serialize};
-use std::{env, ffi::OsString, fs, path::Path};
+use std::{env, ffi::OsString, fs, path::Path, sync::mpsc};
+use tokio::sync::watch::Receiver;
+use notify::Watcher;
 
 const CONFIG_FILE_NAME: &str = "fsy/config.toml";
 
@@ -101,48 +103,81 @@ impl Config {
         Ok(parsed)
     }
 
-    pub fn reload_filesyncs(&mut self) {
+    fn reload(&mut self) {
         let content = fs::read_to_string(&self.config_path).unwrap();
         let parsed: Config = toml::from_str(&content).unwrap();
 
         self.file_syncs = parsed.file_syncs;
-    }
-
-    pub fn reload_trustees(&mut self) {
-        let content = fs::read_to_string(&self.config_path).unwrap();
-        let parsed: Config = toml::from_str(&content).unwrap();
-
         self.trustees = parsed.trustees;
+        // TODO: do we want to reload anything else?!
     }
 
     pub fn save(self) -> Result<Self> {
         let dir_name = match std::path::Path::new(&self.config_path).parent() {
             Some(p) => p,
-            // TODO: handle the error
             None => {
-                return Err(Error::Unknown);
+                return Err(Error::Str("unable to get parent".to_string()));
             }
         };
 
         // make sure all directories are created
         if let Err(_e) = std::fs::create_dir_all(dir_name) {
-            return Err(Error::Unknown);
+            return Err(Error::Str("unable to create all dirs".to_string()));
         }
 
         let config_content = match toml::to_string(&self) {
             Ok(c) => c,
-            // TODO: handle error!
             Err(_e) => {
-                return Err(Error::Unknown);
+                return Err(Error::Str(
+                    "unable to change config to toml string".to_string(),
+                ));
             }
         };
 
         // write the config now
         if let Err(_e) = std::fs::write(&self.config_path, config_content) {
-            return Err(Error::Unknown);
+            return Err(Error::Str("unable to write config file".to_string()));
         }
 
         Ok(self)
+    }
+
+    pub fn watch(
+        &mut self,
+        is_running_rx: Receiver<bool>,
+        mut cb: impl FnMut(Result<&Self>),
+    ) {
+        let config_path_raw = self.config_path.clone();
+        let config_path = Path::new(&config_path_raw);
+
+        // setup the watcher
+        let (tx, rx) = mpsc::channel::<notify::Result<notify::Event>>();
+        let mut watcher = notify::recommended_watcher(tx).unwrap();
+        watcher
+            .watch(config_path, notify::RecursiveMode::NonRecursive)
+            .unwrap();
+
+        // block forever, printing out events as they come in
+        for res in rx {
+            // check if still running or if already all canceled
+            let is_running = *is_running_rx.borrow();
+            if !is_running {
+                println!("breaking the watcher chain...");
+                watcher.unwatch(config_path).unwrap();
+                break;
+            }
+
+            match res {
+                Ok(_event) => {
+                    self.reload();
+                    cb(Ok(self));
+                },
+                Err(e) => {
+                    println!("Something went wrong with watcher: {e}");
+                    cb(Err(Error::Notify(e)));
+                }
+            }
+        }
     }
 }
 
@@ -168,8 +203,7 @@ fn get_config_path(user_relative_path: &str) -> Result<OsString> {
                 .join(user_path)
                 .join(CONFIG_FILE_NAME)
                 .into_os_string()),
-            // TODO: handle the error
-            Err(_err) => Err(Error::Unknown),
+            Err(err) => Err(Error::Unknown(Box::new(err))),
         },
     }
 }
