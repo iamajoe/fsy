@@ -1,15 +1,36 @@
-use std::sync::mpsc;
-
 use crate::config::{FileSync, NodeData, TargetMode};
-use notify::{Event, Watcher};
+use crate::{Result, connection};
+use notify::Watcher;
 use std::fs;
+use std::sync::Arc;
 use tokio::sync::watch::{self, Sender};
 
-fn send_target_push(sync_path: String, node: &NodeData) {
-    // TODO: actually send to the node
+pub async fn process_sync(
+    conn: connection::Connection,
+    syncs: &Vec<FileSync>,
+    nodes: &[NodeData],
+) -> Result<Vec<Sender<bool>>> {
+    let mut is_running_senders: Vec<Sender<bool>> = vec![];
+
+    let conn = Arc::new(conn);
+    for sync in syncs {
+        // handle pushes
+        if let Some(push_watch) = set_sync_push(Arc::clone(&conn), sync, nodes) {
+            is_running_senders.push(push_watch);
+        }
+
+        // handle pulls
+        // TODO: what to do here?!
+    }
+
+    Ok(is_running_senders)
 }
 
-fn set_sync_push(sync: &FileSync, nodes: &[NodeData]) -> Option<Sender<bool>> {
+fn set_sync_push(
+    conn: Arc<connection::Connection>,
+    sync: &FileSync,
+    nodes: &[NodeData],
+) -> Option<Sender<bool>> {
     let sync_targets: Vec<NodeData> = sync
         .targets
         .iter()
@@ -27,72 +48,64 @@ fn set_sync_push(sync: &FileSync, nodes: &[NodeData]) -> Option<Sender<bool>> {
 
     // no point in watching if no targets to send to
     if sync_targets.is_empty() {
+        println!("no targets provided");
         return None;
     }
 
     // no point in watching what doesn't exist
     if !fs::exists(&sync.path).unwrap() {
+        println!("no file to sync exists");
         return None;
     }
 
     // figure which recursive mode should be used
-    let meta = fs::metadata(&sync.path).unwrap();
+    let sync_path = sync.path.clone();
+    let meta = fs::metadata(&sync_path).unwrap();
     let recurse = if meta.is_dir() {
         notify::RecursiveMode::Recursive
     } else {
         notify::RecursiveMode::NonRecursive
     };
 
+    println!("setting up sync target for sync...");
+
     // setup a new spawn for each process
     let (is_running_tx, is_running_rx) = watch::channel(true);
-    let sync_path = sync.path.clone();
 
     tokio::spawn(async move {
-        let (tx, rx) = mpsc::channel::<notify::Result<Event>>();
-        let watcher_res = notify::recommended_watcher(tx);
+        let (should_sync_tx, should_sync_rx) = watch::channel(false);
+        let cb_tx = should_sync_tx.clone(); // value is moved to cb and we need to reset
 
-        // TODO: how to inform about the errors?!
-        match watcher_res {
-            Ok(mut watcher) => {
-                // setup the watcher
-                let p = std::path::Path::new(&sync_path);
-                if let Err(err) = watcher.watch(p, recurse) {
-                    // TODO: should we do something with the returning error?! probably panic
-                    println!("watcher.watch error: {:?}", &err);
-                    return;
-                }
-
-                // TODO: how to break from outside?
-
-                // this is a blocking section
-                for res in rx {
-                    // nothing else to process on this watcher
-                    let is_running = *is_running_rx.borrow();
-                    if !is_running {
-                        println!("shutting watcher for file: {}", &p.to_str().unwrap());
-                        watcher.unwatch(p).unwrap();
-                        break;
-                    }
-
-                    match res {
-                        Ok(event) => {
-                            // TODO: should push the sync
-                            println!("event: {:?}", event);
-
-                            for node in &sync_targets {
-                                // TODO: need to handle errors
-                                // TODO: should be able to cancel the send
-                                send_target_push(sync_path.clone(), node);
-                            }
-                        }
-                        Err(e) => println!("watch error: {:?}", e),
-                    }
-                }
+        let mut watcher = notify::recommended_watcher(move |res| {
+            if let Err(e) = res {
+                println!("watch error: {:?}", e);
+                return;
             }
-            Err(err) => {
-                // TODO: should we do something with the returning error?! probably panic
-                println!("recommended_watcher error: {:?}", &err);
+
+            let _ = cb_tx.send(true);
+        })
+        .unwrap();
+        let p = std::path::Path::new(&sync_path);
+        watcher.watch(p, recurse).unwrap();
+
+        // wait for the end
+        let conn = Arc::clone(&conn);
+        loop {
+            let is_running = *is_running_rx.borrow();
+            if !is_running {
+                println!("shutting watcher for file: {}", &p.to_str().unwrap());
+                watcher.unwatch(p).unwrap();
+               break;
             }
+
+            let should_sync = *should_sync_rx.borrow();
+            if !should_sync {
+                continue;
+            }
+
+            // time to sync...
+            let _ = should_sync_tx.send(false);
+            send_sync_targets(&conn, &sync_targets);
         }
     });
 
@@ -100,19 +113,18 @@ fn set_sync_push(sync: &FileSync, nodes: &[NodeData]) -> Option<Sender<bool>> {
     Some(is_running_tx)
 }
 
-pub fn process_sync(syncs: &Vec<FileSync>, nodes: &[NodeData]) -> Vec<Sender<bool>> {
-    let mut is_running_senders: Vec<Sender<bool>> = vec![];
+fn send_sync_targets(_conn: &connection::Connection, sync_targets: &[NodeData]) {
+    let targets = sync_targets.to_vec();
+    tokio::spawn(async move {
+        for _node in targets {
+            // TODO: need to handle errors
+            // TODO: should be able to cancel the send
+            // conn.send_msg_to_node(&node.node_id, &sync_path)
+            //     .await
+            //     .unwrap();
 
-    for sync in syncs {
-        // handle pushes
-        let push_watch = set_sync_push(sync, nodes);
-        if let Some(s) = push_watch {
-            is_running_senders.push(s)
-        };
-
-        // handle pulls
-        // TODO: what to do here?!
-    }
-
-    is_running_senders
+            // TODO: actually send to the node
+            println!("sending target push...");
+        }
+    });
 }

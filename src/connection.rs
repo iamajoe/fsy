@@ -1,12 +1,12 @@
-use std::{path::Path, str::FromStr};
+use std::{path::Path, str::FromStr, sync::Arc};
 
 use crate::*;
 
 use iroh::{
     Endpoint, NodeAddr, NodeId, SecretKey,
-    protocol::{self},
+    protocol::{self, AcceptError, ProtocolHandler},
 };
-use iroh_blobs::{ALPN, BlobsProtocol, store::fs::FsStore};
+use iroh_blobs::ALPN;
 
 pub struct Connection {
     is_open: bool,
@@ -14,7 +14,7 @@ pub struct Connection {
 }
 
 impl Connection {
-    pub async fn new(raw_secret_key: &[u8; 32], store_path: &Path) -> Result<Self> {
+    pub async fn new(raw_secret_key: &[u8; 32], _store_path: &Path) -> Result<Self> {
         let secret_key = SecretKey::from_bytes(raw_secret_key);
 
         let endpoint = Endpoint::builder()
@@ -31,13 +31,14 @@ impl Connection {
         // should use a file system on temporary dir
         // sending a file with gbs will fill up the ram and crash
         // let store = MemStore::new();
-        let store = FsStore::load(store_path).await.unwrap();
-        let blobs = BlobsProtocol::new(&store, endpoint.clone(), None);
+        // let store = FsStore::load(store_path).await.unwrap();
+        // let blobs = BlobsProtocol::new(&store, endpoint.clone(), None);
 
         // TODO: how can i check for the allowed list?
         //       how do i know that the user can actually connect?
         let router = protocol::Router::builder(endpoint.clone())
-            .accept(iroh_blobs::ALPN, blobs)
+            // .accept(iroh_blobs::ALPN, blobs)
+            .accept(iroh_blobs::ALPN, Arc::new(ProtocolEcho))
             .spawn();
 
         // TODO: need some sort of protocol for communication so that
@@ -56,7 +57,7 @@ impl Connection {
         self.router.endpoint().node_id().to_string()
     }
 
-    pub async fn connect_to_node(&self, node_id: &str) -> Result<()> {
+    pub async fn _connect_to_node(&self, node_id: &str) -> Result<()> {
         let node = NodeId::from_str(node_id);
         let node_addr = NodeAddr::new(node.unwrap());
 
@@ -81,6 +82,32 @@ impl Connection {
         Ok(())
     }
 
+    pub async fn send_msg_to_node(&self, node_id: &str, _msg: &str) -> Result<()> {
+        let node = NodeId::from_str(node_id);
+        let node_addr = NodeAddr::new(node.unwrap());
+
+        let conn = self
+            .router
+            .endpoint()
+            .connect(node_addr, ALPN)
+            .await
+            .unwrap();
+        let (mut send, mut _recv) = conn.open_bi().await.unwrap();
+
+        // test connection
+        send.write_all(b"open_conn").await.unwrap();
+        send.finish().unwrap();
+
+        // TODO: we can use this for example to check if we should sync or not
+        // let response = recv.read_to_end(1000).await.unwrap();
+        // assert_eq!(&response, b"open_conn");
+
+        // after all done, close client
+        conn.close(0u32.into(), b"close_request");
+
+        Ok(())
+    }
+
     pub async fn close(&mut self) -> Result<()> {
         if !self.is_open {
             return Ok(());
@@ -90,6 +117,25 @@ impl Connection {
 
         self.router.endpoint().close().await;
         self.router.shutdown().await.unwrap();
+
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ProtocolEcho;
+
+impl ProtocolHandler for ProtocolEcho {
+    async fn accept(
+        &self,
+        connection: iroh::endpoint::Connection,
+    ) -> std::result::Result<(), AcceptError> {
+        let (mut send, mut recv) = connection.accept_bi().await.unwrap();
+        let bytes_sent = tokio::io::copy(&mut recv, &mut send).await.unwrap();
+        dbg!(bytes_sent);
+
+        send.finish().unwrap();
+        connection.closed().await;
 
         Ok(())
     }

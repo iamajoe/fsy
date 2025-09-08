@@ -1,8 +1,6 @@
 use crate::{Error, Result, key};
-use notify::Watcher;
 use serde::{Deserialize, Serialize};
-use std::{env, ffi::OsString, fs, path::Path, sync::mpsc};
-use tokio::sync::watch::Receiver;
+use std::{env, ffi::OsString, fs, path::Path};
 
 const CONFIG_FILE_NAME: &str = "fsy/config.toml";
 
@@ -12,9 +10,9 @@ pub struct LocalNodeData {
     pub secret_key: [u8; 32],
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct NodeData {
-    pub name: String, // just something descritive for the user
+    pub name: String, // unique identifier of this node for the user
     pub node_id: String,
 }
 
@@ -30,15 +28,16 @@ pub enum TargetMode {
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct FileSyncTarget {
-    pub mode: TargetMode,
+    pub mode: TargetMode,     // is it only push? only pull? both?
     pub trustee_name: String, // trustee name, the descritive
     pub key: String,          // used to check if the user has access to target
 }
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct FileSync {
+    pub name: String, // name identifier to be passed as unique communicator between nodes
     pub path: String, // path for the file / folder
-    pub targets: Vec<FileSyncTarget>,
+    pub targets: Vec<FileSyncTarget>, // targets to whom push / pull
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -103,15 +102,6 @@ impl Config {
         Ok(parsed)
     }
 
-    fn reload(&mut self) {
-        let content = fs::read_to_string(&self.config_path).unwrap();
-        let parsed: Config = toml::from_str(&content).unwrap();
-
-        self.file_syncs = parsed.file_syncs;
-        self.trustees = parsed.trustees;
-        // TODO: do we want to reload anything else?!
-    }
-
     pub fn save(self) -> Result<Self> {
         let dir_name = match std::path::Path::new(&self.config_path).parent() {
             Some(p) => p,
@@ -140,49 +130,6 @@ impl Config {
         }
 
         Ok(self)
-    }
-
-    pub fn watch(&mut self, is_running_rx: Receiver<bool>, mut cb: impl FnMut(Result<&Self>)) {
-        let config_path_raw = self.config_path.clone();
-        let config_path = Path::new(&config_path_raw);
-
-        // setup the watcher
-        let (tx, rx) = mpsc::channel::<notify::Result<notify::Event>>();
-        let mut watcher = notify::recommended_watcher(tx).unwrap();
-        watcher
-            .watch(config_path, notify::RecursiveMode::NonRecursive)
-            .unwrap();
-
-        println!(
-            "setting watcher for file: {}",
-            &config_path.to_str().unwrap()
-        );
-
-        // block forever, printing out events as they come in
-        for res in rx {
-            // TODO: i dont think this channel is working
-            // check if still running or if already all canceled
-            let is_running = *is_running_rx.borrow();
-            if !is_running {
-                println!(
-                    "shutting watcher for file: {}",
-                    &config_path.to_str().unwrap()
-                );
-                watcher.unwatch(config_path).unwrap();
-                break;
-            }
-
-            match res {
-                Ok(_event) => {
-                    self.reload();
-                    cb(Ok(self));
-                }
-                Err(e) => {
-                    println!("Something went wrong with watcher: {e}");
-                    cb(Err(Error::Notify(e)));
-                }
-            }
-        }
     }
 }
 
