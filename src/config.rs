@@ -1,8 +1,8 @@
-use crate::{Result, Error, key};
+use crate::{Error, Result, key};
+use notify::Watcher;
 use serde::{Deserialize, Serialize};
 use std::{env, ffi::OsString, fs, path::Path, sync::mpsc};
 use tokio::sync::watch::Receiver;
-use notify::Watcher;
 
 const CONFIG_FILE_NAME: &str = "fsy/config.toml";
 
@@ -142,11 +142,7 @@ impl Config {
         Ok(self)
     }
 
-    pub fn watch(
-        &mut self,
-        is_running_rx: Receiver<bool>,
-        mut cb: impl FnMut(Result<&Self>),
-    ) {
+    pub fn watch(&mut self, is_running_rx: Receiver<bool>, mut cb: impl FnMut(Result<&Self>)) {
         let config_path_raw = self.config_path.clone();
         let config_path = Path::new(&config_path_raw);
 
@@ -157,12 +153,21 @@ impl Config {
             .watch(config_path, notify::RecursiveMode::NonRecursive)
             .unwrap();
 
+        println!(
+            "setting watcher for file: {}",
+            &config_path.to_str().unwrap()
+        );
+
         // block forever, printing out events as they come in
         for res in rx {
+            // TODO: i dont think this channel is working
             // check if still running or if already all canceled
             let is_running = *is_running_rx.borrow();
             if !is_running {
-                println!("breaking the watcher chain...");
+                println!(
+                    "shutting watcher for file: {}",
+                    &config_path.to_str().unwrap()
+                );
                 watcher.unwatch(config_path).unwrap();
                 break;
             }
@@ -171,7 +176,7 @@ impl Config {
                 Ok(_event) => {
                     self.reload();
                     cb(Ok(self));
-                },
+                }
                 Err(e) => {
                     println!("Something went wrong with watcher: {e}");
                     cb(Err(Error::Notify(e)));

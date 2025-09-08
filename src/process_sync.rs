@@ -69,6 +69,7 @@ fn set_sync_push(sync: &FileSync, nodes: &[NodeData]) -> Option<Sender<bool>> {
                     // nothing else to process on this watcher
                     let is_running = *is_running_rx.borrow();
                     if !is_running {
+                        println!("shutting watcher for file: {}", &p.to_str().unwrap());
                         watcher.unwatch(p).unwrap();
                         break;
                     }

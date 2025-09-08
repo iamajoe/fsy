@@ -17,9 +17,10 @@ pub fn init(is_running_rx: &Receiver<bool>, cb: impl Fn(Event)) -> Result<()> {
 
     loop {
         // check if still running or if already all canceled
+        // TODO: i dont think this channel is working
         let is_running = *is_running_rx.borrow();
         if !is_running {
-            println!("breaking the tui chain...");
+            println!("shutting tui");
             break;
         }
 

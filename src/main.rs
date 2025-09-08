@@ -55,6 +55,8 @@ async fn main() -> Result<()> {
             }
         });
 
+        println!("shutting down watcher senders");
+
         // watch was a blocker, as such, right now, we can close all senders
         for sender in &senders {
             // TODO: should probably log the error
@@ -68,6 +70,7 @@ async fn main() -> Result<()> {
         // TODO: how to pass the event signal?
         tui::init(&tui_is_running_rx, |evt| match evt {
             tui::Event::Quit => {
+                println!("quit event. sending shutdowns");
                 tui_is_running_tx.send(false).unwrap();
                 cwatch_is_running_tx.send(false).unwrap();
             }
