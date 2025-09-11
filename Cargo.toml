@@ -8,6 +8,7 @@ crossterm = "0.29.0"
 iroh = "0.91.1"
 iroh-blobs = "0.93.0"
 notify = { version = "8.1.0", features = ["serde"] }
+notify-debouncer-mini = "0.7.0"
 rand = "0.8.5"
 serde = { version = "1.0", features = ["derive"] }
 tokio = { version = "1", features = ["full"] }
