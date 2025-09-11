@@ -108,6 +108,16 @@ impl Connection {
         Ok(())
     }
 
+    pub async fn subscribe_to_msg<F>(&self, _cb: F) where F: Fn(String, String) {
+        // TODO: listen to messages incoming to the node, if it comes in
+        //       communicate with the message and the node id
+        // self.get_node_id()
+    }
+
+    pub async fn download_from_node<F>(&self, node_id: String, ) {
+        // TODO: ...
+    }
+
     pub async fn close(&mut self) -> Result<()> {
         if !self.is_open {
             return Ok(());

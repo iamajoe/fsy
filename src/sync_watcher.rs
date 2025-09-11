@@ -164,28 +164,55 @@ impl<'a> SyncWatcher<'a> {
             })
             .collect();
 
-        // TODO: should probably setup on a different thread
-
         // iterate each sync and targets send through the node
         for sync in list {
+            let has_push = sync.targets.iter().any(|t| t.mode == TargetMode::Push || t.mode == TargetMode::PushPull);
+            if !has_push {
+                continue;
+            }
+
+            // TODO: build the ticket id / checksum
+            //       these take space on memory / disk, we need to make sure there is at least
+            //       one target that is interested, we need to ping him and wait for his response
+
             for t in &sync.targets {
                 let is_push = t.mode == TargetMode::Push || t.mode == TargetMode::PushPull;
                 if !is_push {
                     continue;
                 }
 
+                // TODO: do not send in if coming in after pull for example
+                //       need to check chunk or something to make sure we don't loop
+                //       ourselves when in push-pull modes
+
                 // find the right trustee data
                 let node = self.nodes.iter().find(|n| n.name == t.trustee_name);
                 if let Some(node) = node {
-                    println!("=> SENDING PUSH: {:?} TO {:?}", &changed_path, &node.node_id);
-
-                    // send it through the wire
-                    // self.conn
-                    //     .send_msg_to_node(&node.node_id, &sync.path)
-                    //     .await
-                    //     .unwrap();
+                    // TODO: should probably setup on a different thread
+                    self.send_push_to_node(sync, node).await;
                 }
             }
         }
+    }
+
+    async fn send_push_to_node(&self, sync: &FileSync, node: &NodeData) {
+        println!("=> SENDING PUSH: {:?} TO {:?}", &sync.path, &node.node_id);
+
+        let msg = "key(PATH;DATE;CHECKSUM / TICKET ID?!)";
+
+        // TODO: what about the key?! we need to make sure the user can actually send
+        //       we use the key to decrypt that depending on the node
+        //
+        // TODO: use iroh blob hashing to create the ticket
+        // TODO: we send to the node the ticket id
+        // TODO: on the node side, we download the ticket
+        // TODO: what if the node is not on?! we don't want to keep this stuff opening
+        //       right?! because the tickets will consume either memory or file system
+        //       and files can be huge
+        //       as such, we want to ping the node to see if he is interested in
+        //       downloading
+
+        // TODO: inform the node that he can download a new version
+        let _ = self.conn.send_msg_to_node(&node.node_id, msg).await;
     }
 }
