@@ -158,26 +158,33 @@ impl ProtocolHandler for MessageProtocol {
         &self,
         connection: iroh::endpoint::Connection,
     ) -> std::result::Result<(), AcceptError> {
-        println!("accepting communication...");
+        println!("accepting bi communication...");
 
-        let (mut send, mut recv) = connection.accept_bi().await?;
-        println!("copying bytes...");
-        let bytes_sent = tokio::io::copy(&mut recv, &mut send).await?;
+        match connection.accept_bi().await {
+            Ok((mut send, mut recv)) => {
+                println!("copying bytes...");
+                let bytes_sent = tokio::io::copy(&mut recv, &mut send).await?;
 
-        println!("reading bytes...");
-        // TODO: how to convert bytes_sent? how are we sure it is a string?
-        let response = recv.read_to_end(bytes_sent as usize).await.unwrap();
-        println!("- Response: {:?}", String::from_utf8(response));
+                println!("reading bytes...");
+                // TODO: how to convert bytes_sent? how are we sure it is a string?
+                let response = recv.read_to_end(bytes_sent as usize).await.unwrap();
+                println!("- Response: {:?}", String::from_utf8(response));
 
-        let node_id = connection.remote_node_id()?;
-        // TODO: send to the message watcher
-        let _ = self
-            .message_watcher_tx
-            .send(Some((node_id.to_string(), String::from("MESSAGE"))));
+                let node_id = connection.remote_node_id()?;
+                // TODO: send to the message watcher
+                let _ = self
+                    .message_watcher_tx
+                    .send(Some((node_id.to_string(), String::from("MESSAGE"))));
 
-        send.finish()?;
-        connection.closed().await;
+                send.finish()?;
+                connection.closed().await;
 
-        Ok(())
+                Ok(())
+            },
+            Err(e) => {
+                println!("error accepting bi: {e}");
+                Err(AcceptError::from_err(e))
+            }
+        }
     }
 }
