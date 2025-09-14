@@ -4,10 +4,12 @@ mod error;
 mod key;
 mod sync_watcher;
 
-use error::*;
+use std::error::Error;
+
+use tokio::sync::watch::Receiver;
 
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn main() -> Result<(), Box<dyn Error>> {
     // TODO: retrieve from cli, like --config "path"
     let user_relative_path = "";
 
@@ -33,8 +35,8 @@ async fn main() -> Result<()> {
 
 async fn init_syncs(
     user_relative_path: &'static str,
-    is_running_rx: tokio::sync::watch::Receiver<bool>,
-) -> Result<()> {
+    mut is_running_rx: Receiver<bool>,
+) -> Result<(), Box<dyn Error>> {
     let config = config::Config::new(user_relative_path).unwrap();
 
     println!("setting storage tmp folder...");
@@ -46,16 +48,23 @@ async fn init_syncs(
     let node_id = conn.get_node_id();
     println!("waiting for requests. public id: {node_id}");
 
-    let mut watcher =
-        sync_watcher::SyncWatcher::new(&conn, &config.file_syncs, &config.trustees, config.local.push_debounce_secs).unwrap();
+    // start the connection
+    // conn.listen_to_messages(&mut is_running_rx).await;
+
+    let mut watcher = sync_watcher::SyncWatcher::new(
+        &mut conn,
+        &config.file_syncs,
+        &config.trustees,
+        config.local.push_debounce_secs,
+    )?;
 
     // start the watcher
-    watcher.start(is_running_rx).await;
+    watcher.start(&mut is_running_rx).await;
 
     println!("shutting down the watcher");
 
     // watch was a blocker, as such, right now, we can close all senders
-    watcher.close().unwrap();
+    watcher.close()?;
 
     println!("shutting down the connection");
 

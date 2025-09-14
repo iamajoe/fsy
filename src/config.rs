@@ -1,5 +1,6 @@
-use crate::{Error, Result, key};
+use crate::key;
 use serde::{Deserialize, Serialize};
+use std::error::Error;
 use std::{env, ffi::OsString, fs, path::Path};
 
 const CONFIG_FILE_NAME: &str = "fsy/config.toml";
@@ -68,7 +69,7 @@ impl Default for Config {
 }
 
 impl Config {
-    pub fn new(user_relative_path: &str) -> Result<Self> {
+    pub fn new(user_relative_path: &str) -> Result<Self, Box<dyn Error>> {
         let config_path = get_config_path(user_relative_path).unwrap();
 
         // create the file if not there
@@ -104,38 +105,36 @@ impl Config {
         Ok(parsed)
     }
 
-    pub fn save(self) -> Result<Self> {
+    pub fn save(self) -> Result<Self, Box<dyn Error>> {
         let dir_name = match std::path::Path::new(&self.config_path).parent() {
             Some(p) => p,
             None => {
-                return Err(Error::Str("unable to get parent".to_string()));
+                return Err("unable to get parent".into());
             }
         };
 
         // make sure all directories are created
         if let Err(_e) = std::fs::create_dir_all(dir_name) {
-            return Err(Error::Str("unable to create all dirs".to_string()));
+            return Err("unable to create all dirs".into());
         }
 
         let config_content = match toml::to_string(&self) {
             Ok(c) => c,
             Err(_e) => {
-                return Err(Error::Str(
-                    "unable to change config to toml string".to_string(),
-                ));
+                return Err("unable to change config to toml string".into());
             }
         };
 
         // write the config now
         if let Err(_e) = std::fs::write(&self.config_path, config_content) {
-            return Err(Error::Str("unable to write config file".to_string()));
+            return Err("unable to write config file".into());
         }
 
         Ok(self)
     }
 }
 
-fn get_config_path(user_relative_path: &str) -> Result<OsString> {
+fn get_config_path(user_relative_path: &str) -> Result<OsString, Box<dyn Error>> {
     // being empty we want to create our own config
     let mut user_path = user_relative_path;
     if user_path.is_empty() {
@@ -150,14 +149,14 @@ fn get_config_path(user_relative_path: &str) -> Result<OsString> {
             .into_os_string()),
 
         // handle case where there isn't an home
-        None => match env::current_exe() {
-            Ok(p) => Ok(p
-                .parent()
-                .unwrap()
+        None => {
+            let p = env::current_exe()?;
+            let res = p.parent().unwrap()
                 .join(user_path)
                 .join(CONFIG_FILE_NAME)
-                .into_os_string()),
-            Err(err) => Err(Error::Unknown(Box::new(err))),
-        },
+                .into_os_string();
+
+            Ok(res)
+        }
     }
 }

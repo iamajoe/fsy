@@ -1,28 +1,29 @@
-use crate::config::{FileSync, NodeData, TargetMode};
-use crate::{Result, connection};
+use crate::{connection, config::{FileSync, NodeData, TargetMode}};
 use notify::FsEventWatcher;
 use notify_debouncer_mini::{DebounceEventResult, DebouncedEventKind, Debouncer, new_debouncer};
+use std::error::Error;
 use std::fs;
 use std::path::PathBuf;
 use std::time::Duration;
-use tokio::select;
+use tokio::{select, sync::watch::{Sender, Receiver, channel}};
 
 pub struct SyncWatcher<'a> {
-    conn: &'a connection::Connection,
+    conn: &'a mut connection::Connection,
     push_watcher: Debouncer<FsEventWatcher>,
-    push_watcher_rx: tokio::sync::watch::Receiver<Option<PathBuf>>,
+    push_watcher_rx: Receiver<Option<PathBuf>>,
     syncs: &'a [FileSync],
     nodes: &'a [NodeData],
 }
 impl<'a> SyncWatcher<'a> {
     pub fn new(
         // TODO: maybe just need send message, receive file and send file?!
-        conn: &'a connection::Connection,
+        conn: &'a mut connection::Connection,
         syncs: &'a [FileSync],
         nodes: &'a [NodeData],
         push_debounce_secs: u64,
-    ) -> Result<Self> {
-        let (watcher_tx, watcher_rx) = tokio::sync::watch::channel::<Option<PathBuf>>(None);
+    ) -> Result<Self, Box<dyn Error>> {
+        let (watcher_tx, watcher_rx) = channel::<Option<PathBuf>>(None);
+
         let watcher = new_debouncer(
             Duration::from_secs(push_debounce_secs),
             move |res: DebounceEventResult| match res {
@@ -36,8 +37,7 @@ impl<'a> SyncWatcher<'a> {
                 }),
                 Err(e) => println!("watcher error {e}"),
             },
-        )
-        .unwrap();
+        )?;
 
         let s = Self {
             conn,
@@ -51,15 +51,19 @@ impl<'a> SyncWatcher<'a> {
     }
 
     // iterates through the watcher
-    pub async fn start(&mut self, mut is_running_rx: tokio::sync::watch::Receiver<bool>) {
+    pub async fn start(&mut self, is_running_rx: &mut Receiver<bool>) {
         // maybe it is not running already
         if !*is_running_rx.borrow() {
             return;
         }
 
+        let (pull_watcher_tx, mut pull_watcher_rx) = channel::<Option<(String, String)>>(None);
+
         // setup all
         self.set_push();
-        self.set_pull();
+        self.set_pull(pull_watcher_tx);
+
+        // TODO: should force one check right at the start
 
         loop {
             select! {
@@ -70,11 +74,19 @@ impl<'a> SyncWatcher<'a> {
                     }
                 },
 
-                // otherwise check for evts for push
+                // check for evts for push
                 _ = self.push_watcher_rx.changed() => {
                     let changed_path: Option<PathBuf> = self.push_watcher_rx.borrow().clone();
                     if let Some(changed_path) = changed_path {
                         self.send_push(changed_path).await;
+                    }
+                },
+
+                // check for evts on the pull
+                _ = pull_watcher_rx.changed() => {
+                    let sub_msg: Option<(String, String)> = pull_watcher_rx.borrow().clone();
+                    if let Some(sub_msg) = sub_msg {
+                        self.receive_pull_msg(sub_msg.0, sub_msg.1);
                     }
                 },
             }
@@ -82,20 +94,24 @@ impl<'a> SyncWatcher<'a> {
     }
 
     // close handles the unsetup of the whole watcher
-    pub fn close(&mut self) -> Result<()> {
+    pub fn close(&mut self) -> Result<(), Box<dyn Error>> {
+        // handle the push side
         for sync in self.syncs.iter() {
             let sync_path = sync.path.clone();
             let p = std::path::Path::new(&sync_path);
 
             // TODO: we just want to ignore error and unwatch all
-            self.push_watcher.watcher().unwatch(p).unwrap();
+            self.push_watcher.watcher().unwatch(p)?;
         }
+
+        // handle the pull side
+        self.conn.unsubscribe_from_msgs();
 
         // TODO: do we need to do anything?!
         Ok(())
     }
 
-    fn set_push(&mut self) {
+    fn set_push(&mut self) -> Result<(), Box<dyn Error>> {
         println!("setting push");
 
         // iterate each sync and set it up
@@ -112,7 +128,7 @@ impl<'a> SyncWatcher<'a> {
             // only set watch if this is push
             let sync_path = sync.path.clone();
             println!("watching push file: {}", &sync_path);
-            let meta = fs::metadata(&sync_path).unwrap();
+            let meta = fs::metadata(&sync_path)?;
             let recurse = if meta.is_dir() {
                 notify::RecursiveMode::Recursive
             } else {
@@ -120,26 +136,15 @@ impl<'a> SyncWatcher<'a> {
             };
 
             let p = std::path::Path::new(&sync_path);
-            self.push_watcher.watcher().watch(p, recurse).unwrap();
+            self.push_watcher.watcher().watch(p, recurse)?;
         }
+
+        Ok(())
     }
 
-    fn set_pull(&self) {
+    fn set_pull(&mut self, pull_watcher_tx: Sender<Option<(String, String)>>) {
         println!("setting pull");
-
-        // iterate each sync and set it up
-        for sync in self.syncs.iter() {
-            // handle pulls
-            let is_pull = sync
-                .targets
-                .iter()
-                .any(|t| t.mode == TargetMode::Pull || t.mode == TargetMode::PushPull);
-            if !is_pull {
-                continue;
-            }
-
-            // TODO: what to do here?!
-        }
+        self.conn.subscribe_to_msgs(pull_watcher_tx);
     }
 
     async fn send_push(&self, changed_path: PathBuf) {
@@ -189,13 +194,18 @@ impl<'a> SyncWatcher<'a> {
                 let node = self.nodes.iter().find(|n| n.name == t.trustee_name);
                 if let Some(node) = node {
                     // TODO: should probably setup on a different thread
-                    self.send_push_to_node(sync, node).await;
+                    let res = self.send_push_to_node(sync, node).await;
+                    if let Err(e) = res {
+                        println!("error on sending message to node: {e}");
+                        // TODO: what to do with the error?!
+                        // TODO: it can be a timeout and we should be fine
+                    }
                 }
             }
         }
     }
 
-    async fn send_push_to_node(&self, sync: &FileSync, node: &NodeData) {
+    async fn send_push_to_node(&self, sync: &FileSync, node: &NodeData) -> Result<(), Box<dyn Error>> {
         println!("=> SENDING PUSH: {:?} TO {:?}", &sync.path, &node.node_id);
 
         let msg = "key(PATH;DATE;CHECKSUM / TICKET ID?!)";
@@ -213,6 +223,15 @@ impl<'a> SyncWatcher<'a> {
         //       downloading
 
         // TODO: inform the node that he can download a new version
-        let _ = self.conn.send_msg_to_node(&node.node_id, msg).await;
+        self.conn.send_msg_to_node(&node.node_id, msg).await
+    }
+
+    fn receive_pull_msg(&self, node_id: String, msg: String) {
+        println!("=> RECEIVING PULL: {:?} TO {:?}", &node_id, &msg);
+        // TODO: check if key is fine
+        // TODO: check if node has a pull
+        // TODO: check if msg is needed and if we want to download, if we want, request the ticket
+        // TODO: if the msg is a download message, provide the blob id
+        // TODO: if the msg is a blob id, download
     }
 }
