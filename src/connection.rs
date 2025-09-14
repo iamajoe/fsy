@@ -72,26 +72,26 @@ impl Connection {
         let node = NodeId::from_str(node_id);
         let node_addr = NodeAddr::new(node.unwrap());
 
+        // Open a connection to the accepting node
         let conn = self
             .router
             .endpoint()
             .connect(node_addr, MESSAGE_PROTOCOL_ALPN)
             .await?;
 
-        let (mut send, mut recv) = conn.open_bi().await?;
+        let (mut send, mut recv) = conn.open_bi().await?; // Open a bidirectional QUIC stream
 
-        // TODO: send the actual bytes of the message
-        let msg_bytes = msg.as_bytes();
-
-        // send message
         println!("connected, writing all");
-        send.write_all(b"open_conn").await?;
+        send.write_all(msg.as_bytes()).await?; // send message
         println!("close connection");
-        send.finish()?;
-        println!("send message to node done");
+        send.finish()?; // signal the end of data for this particular stream
 
-        let resp = recv.read_to_end(usize::MAX).await?;
-        println!("replied: {}", String::from_utf8_lossy(&resp));
+        // wait for the ok
+        let response = recv.read_to_end(2).await?;
+        assert_eq!(&response, b"ok");
+
+        // nothing else more to do in the connection.
+        conn.close(0u32.into(), b"bye");
 
         Ok(())
     }
@@ -163,41 +163,29 @@ impl ProtocolHandler for MessageProtocol {
         &self,
         connection: iroh::endpoint::Connection,
     ) -> std::result::Result<(), AcceptError> {
-        println!("accepting bi communication...");
+        let node_id = connection.remote_node_id()?;
+        println!("accepted connection from {node_id}");
 
         match connection.accept_bi().await {
             Ok((mut send, mut recv)) => {
                 println!("receiving bytes...");
                 // read until the peer finishes the stream
-                let res = recv.read_to_end(usize::MAX).await.unwrap();
+                let res = recv.read_to_end(usize::MAX).await.map_err(AcceptError::from_err)?;
 
                 // send an ok message that arrived
-                send.write_all(b"ok").await.unwrap();
+                send.write_all(b"ok").await.map_err(AcceptError::from_err)?;
                 send.finish()?;
 
-                println!("- Received: {:?}", String::from_utf8_lossy(&res));
+                let res = String::from_utf8_lossy(&res);
+                println!("- Received: {:?}", &res);
 
-                let node_id = connection.remote_node_id()?;
+                // wait until the remote closes the connection, which it does once it
+                // received the response.
+                connection.closed().await;
+
                 let _ = self
                     .message_watcher_tx
-                    .send(Some((node_id.to_string(), "MESSAGE".to_string())));
-
-                // println!("copying bytes...");
-                // let bytes_sent = tokio::io::copy(&mut recv, &mut send).await?;
-                //
-                // println!("reading bytes...");
-                // // TODO: how to convert bytes_sent? how are we sure it is a string?
-                // let response = recv.read_to_end(bytes_sent as usize).await.unwrap();
-                // println!("- Response: {:?}", String::from_utf8(response));
-                //
-                // let node_id = connection.remote_node_id()?;
-                // // TODO: send to the message watcher
-                // let _ = self
-                //     .message_watcher_tx
-                //     .send(Some((node_id.to_string(), String::from("MESSAGE"))));
-                //
-                // send.finish()?;
-                // connection.closed().await;
+                    .send(Some((node_id.to_string(), res.to_string())));
 
                 Ok(())
             }
