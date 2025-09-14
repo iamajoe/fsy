@@ -159,10 +159,10 @@ impl ProtocolHandler for MessageProtocol {
 
         let (mut send, mut recv) = connection.accept_bi().await?;
         let bytes_sent = tokio::io::copy(&mut recv, &mut send).await?;
-        dbg!(bytes_sent);
 
         // TODO: how to convert bytes_sent? how are we sure it is a string?
-        // let response = recv.read_to_end(bytes_sent).await.unwrap();
+        let response = recv.read_to_end(bytes_sent as usize).await.unwrap();
+        println!("- Response: {:?}", String::from_utf8(response));
 
         let node_id = connection.remote_node_id()?;
         // TODO: send to the message watcher
