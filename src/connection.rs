@@ -67,7 +67,7 @@ impl Connection {
     }
 
     pub async fn send_msg_to_node(&self, node_id: &str, msg: &str) -> Result<(), Box<dyn Error>> {
-        println!("sending message to node: {node_id} {msg}");
+        println!("sending message to node: {node_id}");
 
         let node = NodeId::from_str(node_id);
         let node_addr = NodeAddr::new(node.unwrap());
@@ -81,9 +81,7 @@ impl Connection {
 
         let (mut send, mut recv) = conn.open_bi().await?; // Open a bidirectional QUIC stream
 
-        println!("connected, writing all");
         send.write_all(msg.as_bytes()).await?; // send message
-        println!("close connection");
         send.finish()?; // signal the end of data for this particular stream
 
         // wait for the ok
@@ -92,6 +90,8 @@ impl Connection {
 
         // nothing else more to do in the connection.
         conn.close(0u32.into(), b"bye");
+
+        println!("- message sent");
 
         Ok(())
     }
@@ -166,33 +166,32 @@ impl ProtocolHandler for MessageProtocol {
         let node_id = connection.remote_node_id()?;
         println!("accepted connection from {node_id}");
 
-        match connection.accept_bi().await {
-            Ok((mut send, mut recv)) => {
-                println!("receiving bytes...");
-                // read until the peer finishes the stream
-                let res = recv.read_to_end(usize::MAX).await.map_err(AcceptError::from_err)?;
+        let (mut send, mut recv) = connection
+            .accept_bi()
+            .await
+            .map_err(AcceptError::from_err)?;
 
-                // send an ok message that arrived
-                send.write_all(b"ok").await.map_err(AcceptError::from_err)?;
-                send.finish()?;
+        // read until the peer finishes the stream
+        let res = recv
+            .read_to_end(usize::MAX)
+            .await
+            .map_err(AcceptError::from_err)?;
 
-                let res = String::from_utf8_lossy(&res);
-                println!("- Received: {:?}", &res);
+        // send an ok message that arrived
+        send.write_all(b"ok").await.map_err(AcceptError::from_err)?;
+        send.finish()?;
 
-                // wait until the remote closes the connection, which it does once it
-                // received the response.
-                connection.closed().await;
+        let res = String::from_utf8_lossy(&res);
+        println!("- received: {:?}", &res);
 
-                let _ = self
-                    .message_watcher_tx
-                    .send(Some((node_id.to_string(), res.to_string())));
+        // wait until the remote closes the connection, which it does once it
+        // received the response.
+        connection.closed().await;
 
-                Ok(())
-            }
-            Err(e) => {
-                println!("error accepting bi: {e}");
-                Err(AcceptError::from_err(e))
-            }
-        }
+        let _ = self
+            .message_watcher_tx
+            .send(Some((node_id.to_string(), res.to_string())));
+
+        Ok(())
     }
 }
