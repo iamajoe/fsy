@@ -86,7 +86,9 @@ impl Connection {
         // send message
         println!("connected, writing all");
         send.write_all(b"open_conn").await?;
+        println!("close connection");
         send.finish()?;
+        println!("send message to node done");
 
         Ok(())
     }
@@ -161,26 +163,37 @@ impl ProtocolHandler for MessageProtocol {
         println!("accepting bi communication...");
 
         match connection.accept_bi().await {
-            Ok((mut send, mut recv)) => {
-                println!("copying bytes...");
-                let bytes_sent = tokio::io::copy(&mut recv, &mut send).await?;
+            Ok((_send, mut recv)) => {
+                println!("receiving bytes...");
+                // read until the peer finishes the stream
+                let res = recv.read_to_end(usize::MAX).await.unwrap();
 
-                println!("reading bytes...");
-                // TODO: how to convert bytes_sent? how are we sure it is a string?
-                let response = recv.read_to_end(bytes_sent as usize).await.unwrap();
-                println!("- Response: {:?}", String::from_utf8(response));
+                println!("- Received: {:?}", String::from_utf8_lossy(&res));
 
                 let node_id = connection.remote_node_id()?;
-                // TODO: send to the message watcher
                 let _ = self
                     .message_watcher_tx
-                    .send(Some((node_id.to_string(), String::from("MESSAGE"))));
+                    .send(Some((node_id.to_string(), "MESSAGE".to_string())));
 
-                send.finish()?;
-                connection.closed().await;
+                // println!("copying bytes...");
+                // let bytes_sent = tokio::io::copy(&mut recv, &mut send).await?;
+                //
+                // println!("reading bytes...");
+                // // TODO: how to convert bytes_sent? how are we sure it is a string?
+                // let response = recv.read_to_end(bytes_sent as usize).await.unwrap();
+                // println!("- Response: {:?}", String::from_utf8(response));
+                //
+                // let node_id = connection.remote_node_id()?;
+                // // TODO: send to the message watcher
+                // let _ = self
+                //     .message_watcher_tx
+                //     .send(Some((node_id.to_string(), String::from("MESSAGE"))));
+                //
+                // send.finish()?;
+                // connection.closed().await;
 
                 Ok(())
-            },
+            }
             Err(e) => {
                 println!("error accepting bi: {e}");
                 Err(AcceptError::from_err(e))
