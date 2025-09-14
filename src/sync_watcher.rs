@@ -1,15 +1,18 @@
 use crate::{connection, config::{FileSync, NodeData, TargetMode}};
-use notify::FsEventWatcher;
+
+use notify::RecommendedWatcher;
 use notify_debouncer_mini::{DebounceEventResult, DebouncedEventKind, Debouncer, new_debouncer};
+
 use std::error::Error;
 use std::fs;
 use std::path::PathBuf;
 use std::time::Duration;
+
 use tokio::{select, sync::watch::{Sender, Receiver, channel}};
 
 pub struct SyncWatcher<'a> {
     conn: &'a mut connection::Connection,
-    push_watcher: Debouncer<FsEventWatcher>,
+    push_watcher: Debouncer<RecommendedWatcher>,
     push_watcher_rx: Receiver<Option<PathBuf>>,
     syncs: &'a [FileSync],
     nodes: &'a [NodeData],
@@ -60,7 +63,7 @@ impl<'a> SyncWatcher<'a> {
         let (pull_watcher_tx, mut pull_watcher_rx) = channel::<Option<(String, String)>>(None);
 
         // setup all
-        self.set_push();
+        let _ = self.set_push(); // TODO: what about errors
         self.set_pull(pull_watcher_tx);
 
         // TODO: should force one check right at the start
