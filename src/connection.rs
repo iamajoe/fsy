@@ -17,7 +17,10 @@ pub struct Connection {
 }
 
 impl Connection {
-    pub async fn new(raw_secret_key: &[u8; 32], _store_path: &Path) -> Result<Self, Box<dyn Error>> {
+    pub async fn new(
+        raw_secret_key: &[u8; 32],
+        _store_path: &Path,
+    ) -> Result<Self, Box<dyn Error>> {
         let secret_key = SecretKey::from_bytes(raw_secret_key);
 
         let endpoint = Endpoint::builder()
@@ -158,8 +161,10 @@ impl ProtocolHandler for MessageProtocol {
         println!("accepting communication...");
 
         let (mut send, mut recv) = connection.accept_bi().await?;
+        println!("copying bytes...");
         let bytes_sent = tokio::io::copy(&mut recv, &mut send).await?;
 
+        println!("reading bytes...");
         // TODO: how to convert bytes_sent? how are we sure it is a string?
         let response = recv.read_to_end(bytes_sent as usize).await.unwrap();
         println!("- Response: {:?}", String::from_utf8(response));
