@@ -78,7 +78,7 @@ impl Connection {
             .connect(node_addr, MESSAGE_PROTOCOL_ALPN)
             .await?;
 
-        let (mut send, mut _recv) = conn.open_bi().await?;
+        let (mut send, mut recv) = conn.open_bi().await?;
 
         // TODO: send the actual bytes of the message
         let msg_bytes = msg.as_bytes();
@@ -89,6 +89,9 @@ impl Connection {
         println!("close connection");
         send.finish()?;
         println!("send message to node done");
+
+        let resp = recv.read_to_end(usize::MAX).await?;
+        println!("replied: {}", String::from_utf8_lossy(&resp));
 
         Ok(())
     }
@@ -163,10 +166,14 @@ impl ProtocolHandler for MessageProtocol {
         println!("accepting bi communication...");
 
         match connection.accept_bi().await {
-            Ok((_send, mut recv)) => {
+            Ok((mut send, mut recv)) => {
                 println!("receiving bytes...");
                 // read until the peer finishes the stream
                 let res = recv.read_to_end(usize::MAX).await.unwrap();
+
+                // send an ok message that arrived
+                send.write_all(b"ok").await.unwrap();
+                send.finish()?;
 
                 println!("- Received: {:?}", String::from_utf8_lossy(&res));
 
