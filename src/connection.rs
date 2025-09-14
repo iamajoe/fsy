@@ -64,6 +64,8 @@ impl Connection {
     }
 
     pub async fn send_msg_to_node(&self, node_id: &str, msg: &str) -> Result<(), Box<dyn Error>> {
+        println!("sending message to node: {node_id} {msg}");
+
         let node = NodeId::from_str(node_id);
         let node_addr = NodeAddr::new(node.unwrap());
 
@@ -79,6 +81,7 @@ impl Connection {
         let msg_bytes = msg.as_bytes();
 
         // send message
+        println!("connected, writing all");
         send.write_all(b"open_conn").await?;
         send.finish()?;
 
@@ -152,6 +155,8 @@ impl ProtocolHandler for MessageProtocol {
         &self,
         connection: iroh::endpoint::Connection,
     ) -> std::result::Result<(), AcceptError> {
+        println!("accepting communication...");
+
         let (mut send, mut recv) = connection.accept_bi().await?;
         let bytes_sent = tokio::io::copy(&mut recv, &mut send).await?;
         dbg!(bytes_sent);
