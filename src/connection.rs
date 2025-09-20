@@ -1,26 +1,22 @@
+use anyhow::Result;
 use iroh::{
     Endpoint, NodeAddr, NodeId, SecretKey,
     protocol::{self, AcceptError, ProtocolHandler},
 };
-use std::{error::Error, path::Path, str::FromStr};
-use tokio::{
-    select,
-    sync::watch::{Receiver, Sender, channel},
-};
+use std::{path::Path, str::FromStr};
+use tokio::sync::watch::{Receiver, Sender, channel};
+
+use crate::entity::CommAction;
 
 const MESSAGE_PROTOCOL_ALPN: &[u8] = b"iroh/ping/0";
 
 pub struct Connection {
     router: protocol::Router,
-    message_watcher_rx: Receiver<Option<(String, String)>>,
-    message_sub_tx: Option<Sender<Option<(String, String)>>>,
+    message_watcher_rx: Receiver<CommAction>,
 }
 
 impl Connection {
-    pub async fn new(
-        raw_secret_key: &[u8; 32],
-        _store_path: &Path,
-    ) -> Result<Self, Box<dyn Error>> {
+    pub async fn new(raw_secret_key: &[u8; 32], _store_path: &Path) -> Result<Self> {
         let secret_key = SecretKey::from_bytes(raw_secret_key);
 
         let endpoint = Endpoint::builder()
@@ -42,7 +38,7 @@ impl Connection {
 
         // TODO: how can i check for the allowed list?
         //       how do i know that the user can actually connect?
-        let (message_watcher_tx, message_watcher_rx) = channel::<Option<(String, String)>>(None);
+        let (message_watcher_tx, message_watcher_rx) = channel::<CommAction>(CommAction::None);
         let message_protocol = MessageProtocol::new(message_watcher_tx);
         let router = protocol::Router::builder(endpoint.clone())
             // .accept(iroh_blobs::ALPN, blobs)
@@ -58,7 +54,6 @@ impl Connection {
         Ok(Self {
             router,
             message_watcher_rx,
-            message_sub_tx: None,
         })
     }
 
@@ -66,10 +61,17 @@ impl Connection {
         self.router.endpoint().node_id().to_string()
     }
 
-    pub async fn send_msg_to_node(&self, node_id: &str, msg: &str) -> Result<(), Box<dyn Error>> {
+    pub async fn close(&self) -> Result<()> {
+        self.router.endpoint().close().await;
+        self.router.shutdown().await?;
+
+        Ok(())
+    }
+
+    pub async fn send_msg_to_node(&self, node_id: String, msg: String) -> Result<()> {
         println!("sending message to node: {node_id}");
 
-        let node = NodeId::from_str(node_id);
+        let node = NodeId::from_str(&node_id);
         let node_addr = NodeAddr::new(node.unwrap());
 
         // Open a connection to the accepting node
@@ -89,57 +91,30 @@ impl Connection {
         assert_eq!(&response, b"ok");
 
         // nothing else more to do in the connection.
-        conn.close(0u32.into(), b"bye");
+        let close_msg = "bye";
+        conn.close(0u32.into(), close_msg.as_bytes());
 
         println!("- message sent");
 
         Ok(())
     }
 
-    // NOTE: function first argument should be node_id, second, message
-    pub fn subscribe_to_msgs(&mut self, watcher_tx: Sender<Option<(String, String)>>) {
-        self.message_sub_tx = Some(watcher_tx);
-    }
+    pub async fn check_events(&mut self, msg_tx: &Sender<Vec<CommAction>>) -> Result<()> {
+        println!("checking for connection events");
 
-    // NOTE: function first argument should be node_id, second, message
-    pub fn unsubscribe_from_msgs(&mut self) {
-        self.message_sub_tx = None;
-    }
-
-    pub async fn download_ticket_id(&self, ticket_id: String) {
-        // TODO: ...
-    }
-
-    // iterates through the watcher
-    pub async fn listen_to_messages(&mut self, is_running_rx: &mut Receiver<bool>) {
-        // maybe it is not running already
-        if !*is_running_rx.borrow() {
-            return;
-        }
-
-        loop {
-            select! {
-                // if not running, get out
-                _ = is_running_rx.changed() => {
-                    if !*is_running_rx.borrow() {
-                        break;
-                    }
-                },
-
-                // check for evts from message
-                _ = self.message_watcher_rx.changed() => {
-                    if let Some(sub_tx) = &self.message_sub_tx {
-                        let message = self.message_watcher_rx.borrow().clone();
-                        let _ = sub_tx.send(message);
-                    }
-                },
+        // NOTE: this blocks until it changes
+        match self.message_watcher_rx.changed().await {
+            Ok(()) => {
+                if let CommAction::ReceiveMessage(node_id, message) =
+                    self.message_watcher_rx.borrow().clone()
+                {
+                    let _ = msg_tx.send(vec![CommAction::ReceiveMessage(node_id, message)]);
+                }
+            }
+            Err(e) => {
+                return Err(e.into());
             }
         }
-    }
-
-    pub async fn close(&mut self) -> Result<(), Box<dyn Error>> {
-        self.router.endpoint().close().await;
-        self.router.shutdown().await?;
 
         Ok(())
     }
@@ -147,11 +122,11 @@ impl Connection {
 
 #[derive(Debug, Clone)]
 struct MessageProtocol {
-    message_watcher_tx: Sender<Option<(String, String)>>,
+    message_watcher_tx: Sender<CommAction>,
 }
 
 impl MessageProtocol {
-    pub fn new(watcher_tx: Sender<Option<(String, String)>>) -> Self {
+    pub fn new(watcher_tx: Sender<CommAction>) -> Self {
         Self {
             message_watcher_tx: watcher_tx,
         }
@@ -188,9 +163,10 @@ impl ProtocolHandler for MessageProtocol {
         // received the response.
         connection.closed().await;
 
-        let _ = self
-            .message_watcher_tx
-            .send(Some((node_id.to_string(), res.to_string())));
+        let _ = self.message_watcher_tx.send(CommAction::ReceiveMessage(
+            node_id.to_string(),
+            res.to_string(),
+        ));
 
         Ok(())
     }

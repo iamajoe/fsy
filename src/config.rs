@@ -1,6 +1,6 @@
 use crate::key;
+use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
-use std::error::Error;
 use std::{env, ffi::OsString, fs, path::Path};
 
 const CONFIG_FILE_NAME: &str = "fsy/config.toml";
@@ -69,7 +69,7 @@ impl Default for Config {
 }
 
 impl Config {
-    pub fn new(user_relative_path: &str) -> Result<Self, Box<dyn Error>> {
+    pub fn new(user_relative_path: &str) -> Result<Self> {
         let config_path = get_config_path(user_relative_path).unwrap();
 
         // create the file if not there
@@ -78,7 +78,8 @@ impl Config {
                 config_path,
                 ..Default::default()
             };
-            return s.save(); // we want to save the file
+
+            return save_config(s);
         }
 
         // read the file now
@@ -104,37 +105,37 @@ impl Config {
 
         Ok(parsed)
     }
-
-    pub fn save(self) -> Result<Self, Box<dyn Error>> {
-        let dir_name = match std::path::Path::new(&self.config_path).parent() {
-            Some(p) => p,
-            None => {
-                return Err("unable to get parent".into());
-            }
-        };
-
-        // make sure all directories are created
-        if let Err(_e) = std::fs::create_dir_all(dir_name) {
-            return Err("unable to create all dirs".into());
-        }
-
-        let config_content = match toml::to_string(&self) {
-            Ok(c) => c,
-            Err(_e) => {
-                return Err("unable to change config to toml string".into());
-            }
-        };
-
-        // write the config now
-        if let Err(_e) = std::fs::write(&self.config_path, config_content) {
-            return Err("unable to write config file".into());
-        }
-
-        Ok(self)
-    }
 }
 
-fn get_config_path(user_relative_path: &str) -> Result<OsString, Box<dyn Error>> {
+fn save_config(conf: Config) -> Result<Config> {
+    let dir_name = match std::path::Path::new(&conf.config_path).parent() {
+        Some(p) => p,
+        None => {
+            bail!("unable to get parent")
+        }
+    };
+
+    // make sure all directories are created
+    if let Err(_e) = std::fs::create_dir_all(dir_name) {
+        bail!("unable to create all dirs")
+    }
+
+    let config_content = match toml::to_string(&conf) {
+        Ok(c) => c,
+        Err(_e) => {
+            bail!("unable to change config to toml string")
+        }
+    };
+
+    // write the config now
+    if let Err(_e) = std::fs::write(&conf.config_path, config_content) {
+        bail!("unable to write config file")
+    }
+
+    Ok(conf)
+}
+
+fn get_config_path(user_relative_path: &str) -> Result<OsString> {
     // being empty we want to create our own config
     let mut user_path = user_relative_path;
     if user_path.is_empty() {
@@ -151,12 +152,29 @@ fn get_config_path(user_relative_path: &str) -> Result<OsString, Box<dyn Error>>
         // handle case where there isn't an home
         None => {
             let p = env::current_exe()?;
-            let res = p.parent().unwrap()
+            let res = p
+                .parent()
+                .unwrap()
                 .join(user_path)
                 .join(CONFIG_FILE_NAME)
                 .into_os_string();
 
             Ok(res)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_get_config_path() -> Result<()> {
+        let user_relative_path = "test_user_relative_path";
+        let res = get_config_path(user_relative_path)?;
+        let res_str = res.into_string().unwrap();
+
+        assert!(&res_str.contains(user_relative_path));
+        Ok(())
     }
 }
