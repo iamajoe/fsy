@@ -1,5 +1,3 @@
-use anyhow::Result;
-
 pub const MAX_CAPACITY: usize = 1000;
 
 pub struct Queue<T> {
@@ -125,6 +123,7 @@ impl<T> Queue<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use anyhow::Result;
 
     #[test]
     fn test_new() -> Result<()> {
