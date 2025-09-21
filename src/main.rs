@@ -1,6 +1,7 @@
 mod config;
 mod connection;
 mod entity;
+mod queue;
 mod key;
 mod sync_watcher;
 
@@ -185,41 +186,4 @@ async fn listen_to_syncs(
     }
 
     Ok(watcher)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_channels() -> Result<()> {
-        let (tx, rx) = channel::<i32>(0);
-        let rx_clone_a = rx.clone();
-        let rx_clone_b = rx.clone();
-        tx.send(1).unwrap();
-        // tx.send(2).unwrap();
-
-        let res = *rx.borrow();
-        assert_eq!(res, 1);
-
-        let res = *rx_clone_a.borrow();
-        // assert_eq!(res, 2);
-        assert_eq!(res, 1);
-
-        let res = *rx_clone_b.borrow();
-        // assert_eq!(res, 2);
-        assert_eq!(res, 1);
-
-        tx.send(2).unwrap();
-        let res = *rx.borrow();
-        assert_eq!(res, 2);
-
-        let res = *rx_clone_a.borrow();
-        assert_eq!(res, 2);
-
-        let res = *rx_clone_b.borrow();
-        assert_eq!(res, 2);
-
-        Ok(())
-    }
 }
