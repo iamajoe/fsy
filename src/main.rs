@@ -68,7 +68,7 @@ async fn main() -> Result<()> {
             )
             .await
             .unwrap();
-            sleep(Duration::from_millis(250)).await;
+            sleep(Duration::from_millis(config.local.loop_debounce_millisecs)).await;
         }
     });
 
@@ -93,7 +93,7 @@ async fn main() -> Result<()> {
             )
             .await
             .unwrap();
-            sleep(Duration::from_millis(250)).await;
+            sleep(Duration::from_millis(config.local.loop_debounce_millisecs)).await;
         }
     });
 
