@@ -121,14 +121,20 @@ async fn run_event_check(
     sync_queue: &Arc<Mutex<queue::Queue<CommAction>>>,
 ) -> Result<()> {
     // check for events on the connection
-    if let Some(msg) = conn.lock().await.get_events() {
-        sync_queue.lock().await.push(msg);
+    {
+        // NOTE: setup scope because of the lock
+        if let Some(msg) = conn.lock().await.get_events() {
+            sync_queue.lock().await.push(msg);
+        }
     }
 
-    // check for events on the watcher
-    if let Some(msgs) = sync.lock().await.get_changed_files() {
-        for msg in msgs {
-            conn_queue.lock().await.push(msg);
+    {
+        // NOTE: setup scope because of the lock
+        // check for events on the watcher
+        if let Some(msgs) = sync.lock().await.get_changed_files() {
+            for msg in msgs {
+                conn_queue.lock().await.push(msg);
+            }
         }
     }
 
