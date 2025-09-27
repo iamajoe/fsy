@@ -9,7 +9,8 @@ const CONFIG_FILE_NAME: &str = "fsy/config.toml";
 pub struct LocalNodeData {
     pub public_key: String,
     pub secret_key: [u8; 32],
-    pub push_debounce_secs: u64,
+    pub push_debounce_millisecs: u64,
+    pub loop_debounce_millisecs: u64,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -60,7 +61,8 @@ impl Default for Config {
             local: LocalNodeData {
                 public_key: raw_secret_key.public().to_string(),
                 secret_key: raw_secret_key.secret().to_bytes(),
-                push_debounce_secs: 10,
+                push_debounce_millisecs: 500,
+                loop_debounce_millisecs: 250,
             },
             trustees: vec![],
             file_syncs: vec![],

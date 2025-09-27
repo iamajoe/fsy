@@ -5,13 +5,14 @@ mod key;
 mod queue;
 mod sync_watcher;
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::Result;
-use tokio::select;
-use tokio::sync::watch::{Receiver, Sender, channel};
+use tokio::sync::Mutex;
+use tokio::sync::watch::channel;
+use tokio::time::sleep;
 
-use self::config::{FileSync, NodeData};
 use self::connection::Connection;
 use self::entity::CommAction;
 use self::sync_watcher::SyncWatcher;
@@ -22,60 +23,78 @@ async fn main() -> Result<()> {
     let user_relative_path = "";
     let config = config::Config::new(user_relative_path).unwrap();
 
+    // setup the connection
+    println!("starting connection");
+    let tmp_dir = std::env::temp_dir().join("fsy_storage");
+    std::fs::create_dir_all(&tmp_dir).unwrap();
+    let conn = Arc::new(Mutex::new(
+        Connection::new(&config.local.secret_key, &tmp_dir).await?,
+    ));
+    let node_id = conn.lock().await.get_node_id();
+    println!("waiting for requests. public id: {node_id}");
+
+    // setup the watcher
+    println!("starting watcher sync");
+    let sync = Arc::new(Mutex::new(SyncWatcher::new(
+        config.file_syncs,
+        config.trustees,
+        config.local.push_debounce_millisecs,
+    )?));
+
     let (is_running_tx, is_running_rx) = channel(true);
-
-    let (conn_tx, conn_rx) = channel::<Vec<CommAction>>(vec![]);
-    let (sync_tx, sync_rx) = channel::<Vec<CommAction>>(vec![]);
-
-    let conn_is_running_rx = is_running_rx.clone();
-    let sync_is_running_rx = is_running_rx.clone();
-
-    // TODO: how to setup the queues?!
-    //       we need 2 queues, one for the messages incoming
-    //       other for the messages going out
     let conn_queue: Arc<Mutex<queue::Queue<CommAction>>> =
         Arc::new(Mutex::new(queue::Queue::new(queue::MAX_CAPACITY)));
     let sync_queue: Arc<Mutex<queue::Queue<CommAction>>> =
         Arc::new(Mutex::new(queue::Queue::new(queue::MAX_CAPACITY)));
 
-    // let conn_queue_loop = actions_queue.clone();
-    // let sync_queue_loop = actions_queue.clone();
-
-    // loop receivers for queues
+    // loop receivers of events into queues
+    println!("thread: looping events for queue");
+    let event_is_running_rx = is_running_rx.clone();
+    let event_conn_queue = conn_queue.clone();
+    let event_conn = conn.clone();
+    let event_sync_queue = sync_queue.clone();
+    let event_sync = sync.clone();
     tokio::spawn(async move {
-        run_queue_checkers(is_running_rx, conn_rx, sync_rx, conn_queue, sync_queue)
+        loop {
+            if !*event_is_running_rx.borrow() {
+                break;
+            }
+
+            run_event_check(
+                &event_conn,
+                &event_sync,
+                &event_conn_queue,
+                &event_sync_queue,
+            )
             .await
             .unwrap();
+            sleep(Duration::from_millis(250)).await;
+        }
     });
 
-    // setup connection and wait for changes
+    // handle the queues
+    println!("thread: looping queue handling");
+    let queue_is_running_rx = is_running_rx.clone();
+    let queue_conn_queue = conn_queue.clone();
+    let queue_conn = conn.clone();
+    let queue_sync_queue = sync_queue.clone();
+    let queue_sync = sync.clone();
     tokio::spawn(async move {
-        println!("opening connection");
-        let conn = run_conn(&config.local.secret_key, conn_is_running_rx, conn_tx)
+        loop {
+            if !*queue_is_running_rx.borrow() {
+                break;
+            }
+
+            run_queue_check(
+                &queue_conn,
+                &queue_sync,
+                &queue_conn_queue,
+                &queue_sync_queue,
+            )
             .await
             .unwrap();
-
-        // NOTE: when it arrives here, it means the connection is no longer in use
-        // close the connection
-        conn.close().await.unwrap();
-    });
-
-    // setup sync watcher
-    tokio::spawn(async move {
-        println!("opening sync");
-        let mut watcher = run_syncs(
-            config.trustees,
-            config.file_syncs,
-            config.local.push_debounce_secs,
-            sync_is_running_rx,
-            sync_tx,
-        )
-        .await
-        .unwrap();
-
-        // NOTE: when it arrives here, it means the connection is no longer in use
-        // close the connection
-        watcher.close().unwrap();
+            sleep(Duration::from_millis(250)).await;
+        }
     });
 
     // wait for all the keyboard events
@@ -88,158 +107,60 @@ async fn main() -> Result<()> {
     // shut the threads
     is_running_tx.send(false).unwrap();
 
+    // NOTE: when it arrives here, it means we should close all
+    conn.lock().await.close().await.unwrap();
+    sync.lock().await.close().unwrap();
+
     Ok(())
 }
 
-async fn run_queue_checkers(
-    mut is_running_rx: Receiver<bool>,
-    mut conn_rx: Receiver<Vec<CommAction>>,
-    mut sync_rx: Receiver<Vec<CommAction>>,
-    conn_queue: Arc<Mutex<queue::Queue<CommAction>>>,
-    sync_queue: Arc<Mutex<queue::Queue<CommAction>>>,
+async fn run_event_check(
+    conn: &Arc<Mutex<Connection>>,
+    sync: &Arc<Mutex<SyncWatcher>>,
+    conn_queue: &Arc<Mutex<queue::Queue<CommAction>>>,
+    sync_queue: &Arc<Mutex<queue::Queue<CommAction>>>,
 ) -> Result<()> {
-    loop {
-        select! {
-            // if not running, get out
-            _ = is_running_rx.changed() => {
-                if !*is_running_rx.borrow() {
-                    break;
-                }
-            },
+    // check for events on the connection
+    if let Some(msg) = conn.lock().await.get_events() {
+        sync_queue.lock().await.push(msg);
+    }
 
-            // check for messages from the connection
-            _ = conn_rx.changed() => {
-                let actions: Vec<CommAction> = conn_rx.borrow().clone();
-                for action in actions {
-                    if let CommAction::ReceiveMessage(node_id, msg) = action {
-                        let mut sync_queue_lock = sync_queue.lock().unwrap();
-                        sync_queue_lock.push(CommAction::ReceiveMessage(node_id, msg));
-
-                        // TODO: handle the receiving part
-                        // TODO: send connection to the queue
-                        // println!("=> RECEIVING PULL: {:?} TO {:?}", &node_id, &msg);
-                        // TODO: check if key is fine
-                        // TODO: check if node has a pull
-                        // TODO: check if msg is needed and if we want to download, if we want, request the ticket
-                        // TODO: if the msg is a download message, provide the blob id
-                        // TODO: if the msg is a blob id, download
-                    }
-                }
-            },
-
-            // check for messages from the sync
-            _ = sync_rx.changed() => {
-                let actions: Vec<CommAction> = sync_rx.borrow().clone();
-                for action in actions {
-                    if let CommAction::SendMessage(node_id, msg) = action {
-                        let mut conn_queue_lock = conn_queue.lock().unwrap();
-                        conn_queue_lock.push(CommAction::SendMessage(node_id, msg));
-
-                        // TODO: handle the receiving part
-                        // TODO: send connection to the queue
-                        // println!("=> RECEIVING PUSH: {:?} TO {:?}", &node_id, &msg);
-                        // TODO: check if key is fine
-                        // TODO: check if node has a pull
-                        // TODO: check if msg is needed and if we want to download, if we want, request the ticket
-                        // TODO: if the msg is a download message, provide the blob id
-                        // TODO: if the msg is a blob id, download
-                    }
-                }
-            },
+    // check for events on the watcher
+    if let Some(msgs) = sync.lock().await.get_changed_files() {
+        for msg in msgs {
+            conn_queue.lock().await.push(msg);
         }
     }
 
     Ok(())
 }
 
-async fn run_conn(
-    raw_secret_key: &[u8; 32],
-    mut is_running_rx: Receiver<bool>,
-    conn_tx: Sender<Vec<CommAction>>,
-) -> Result<Connection> {
-    let tmp_dir = std::env::temp_dir().join("fsy_storage");
-    std::fs::create_dir_all(&tmp_dir).unwrap();
+async fn run_queue_check(
+    _conn: &Arc<Mutex<Connection>>,
+    _sync: &Arc<Mutex<SyncWatcher>>,
+    _conn_queue: &Arc<Mutex<queue::Queue<CommAction>>>,
+    _sync_queue: &Arc<Mutex<queue::Queue<CommAction>>>,
+) -> Result<()> {
+    // TODO: ...
+    // check for events on the connection
+    // TODO: handle the receiving part
+    // TODO: send connection to the queue
+    // println!("=> RECEIVING PULL: {:?} TO {:?}", &node_id, &msg);
+    // TODO: check if key is fine
+    // TODO: check if node has a pull
+    // TODO: check if msg is needed and if we want to download, if we want, request the ticket
+    // TODO: if the msg is a download message, provide the blob id
+    // TODO: if the msg is a blob id, download
 
-    let mut conn = Connection::new(raw_secret_key, &tmp_dir).await?;
+    // check for events on the watcher
+    // TODO: handle the receiving part
+    // TODO: send connection to the queue
+    // println!("=> RECEIVING PUSH: {:?} TO {:?}", &node_id, &msg);
+    // TODO: check if key is fine
+    // TODO: check if node has a pull
+    // TODO: check if msg is needed and if we want to download, if we want, request the ticket
+    // TODO: if the msg is a download message, provide the blob id
+    // TODO: if the msg is a blob id, download
 
-    // maybe it is not running already
-    if !*is_running_rx.borrow() {
-        return Ok(conn);
-    }
-
-    let node_id = conn.get_node_id();
-    println!("waiting for requests. public id: {node_id}");
-
-    // TODO: need to setup a queue of events! otherwise older ones might be lost
-    //       channels, as you push, they change the older value if not caught
-    //       since it is a sync process to listen to changes and send them
-    //       it is quite possible and probable that it happens
-
-    // iterate and check for possible events on the connection
-    loop {
-        select! {
-            // if not running, get out
-            _ = is_running_rx.changed() => {
-                if !*is_running_rx.borrow() {
-                    break;
-                }
-            },
-
-            // check for receiving messages through the connection
-            _ = conn.check_events(&conn_tx) => {},
-
-            // check for messages that should be sent through the connection
-            // TODO: should check the queue
-            // _ = conn_rx.changed() => {
-            //     let actions: Vec<CommAction> = conn_rx.borrow().clone();
-            //     for action in actions {
-            //         if let CommAction::SendMessage(node_id, msg) = action {
-            //             conn.send_msg_to_node(node_id, msg).await.unwrap();
-            //         }
-            //     }
-            // },
-        }
-    }
-
-    Ok(conn)
-}
-
-async fn run_syncs(
-    trustees: Vec<NodeData>,
-    file_syncs: Vec<FileSync>,
-    push_debounce_secs: u64,
-    mut is_running_rx: Receiver<bool>,
-    conn_tx: Sender<Vec<CommAction>>,
-) -> Result<SyncWatcher> {
-    let mut watcher = SyncWatcher::new(file_syncs, trustees, push_debounce_secs)?;
-
-    // maybe it is not running already
-    if !*is_running_rx.borrow() {
-        return Ok(watcher);
-    }
-
-    // TODO: need to setup a queue of events! otherwise older ones might be lost
-    //       channels, as you push, they change the older value if not caught
-    //       since it is a sync process to listen to changes and send them
-    //       it is quite possible and probable that it happens
-
-    // iterate and check for possible events on the connection
-    loop {
-        select! {
-            // if not running, get out
-            _ = is_running_rx.changed() => {
-                if !*is_running_rx.borrow() {
-                    break;
-                }
-            },
-
-            // check for messages to send
-            _ = watcher.check_for_changed_files(&conn_tx) => {},
-
-            // check for messages from the connection
-            // TODO: need to check the queue
-        }
-    }
-
-    Ok(watcher)
+    Ok(())
 }

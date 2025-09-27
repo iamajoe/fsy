@@ -3,8 +3,7 @@ use iroh::{
     Endpoint, NodeAddr, NodeId, SecretKey,
     protocol::{self, AcceptError, ProtocolHandler},
 };
-use std::{path::Path, str::FromStr};
-use tokio::sync::watch::{Receiver, Sender, channel};
+use std::{path::Path, str::FromStr, sync::mpsc};
 
 use crate::entity::CommAction;
 
@@ -12,7 +11,7 @@ const MESSAGE_PROTOCOL_ALPN: &[u8] = b"iroh/ping/0";
 
 pub struct Connection {
     router: protocol::Router,
-    message_watcher_rx: Receiver<CommAction>,
+    message_watcher_rx: mpsc::Receiver<CommAction>,
 }
 
 impl Connection {
@@ -38,7 +37,7 @@ impl Connection {
 
         // TODO: how can i check for the allowed list?
         //       how do i know that the user can actually connect?
-        let (message_watcher_tx, message_watcher_rx) = channel::<CommAction>(CommAction::None);
+        let (message_watcher_tx, message_watcher_rx) = mpsc::channel();
         let message_protocol = MessageProtocol::new(message_watcher_tx);
         let router = protocol::Router::builder(endpoint.clone())
             // .accept(iroh_blobs::ALPN, blobs)
@@ -99,34 +98,23 @@ impl Connection {
         Ok(())
     }
 
-    pub async fn check_events(&mut self, msg_tx: &Sender<Vec<CommAction>>) -> Result<()> {
-        println!("checking for connection events");
-
-        // NOTE: this blocks until it changes
-        match self.message_watcher_rx.changed().await {
-            Ok(()) => {
-                if let CommAction::ReceiveMessage(node_id, message) =
-                    self.message_watcher_rx.borrow().clone()
-                {
-                    let _ = msg_tx.send(vec![CommAction::ReceiveMessage(node_id, message)]);
-                }
-            }
-            Err(e) => {
-                return Err(e.into());
-            }
+    pub fn get_events(&mut self) -> Option<CommAction> {
+        let watch_msg = self.message_watcher_rx.try_recv();
+        if let Ok(CommAction::ReceiveMessage(node_id, message)) = watch_msg {
+            return Some(CommAction::ReceiveMessage(node_id, message));
         }
 
-        Ok(())
+        None
     }
 }
 
 #[derive(Debug, Clone)]
 struct MessageProtocol {
-    message_watcher_tx: Sender<CommAction>,
+    message_watcher_tx: mpsc::Sender<CommAction>,
 }
 
 impl MessageProtocol {
-    pub fn new(watcher_tx: Sender<CommAction>) -> Self {
+    pub fn new(watcher_tx: mpsc::Sender<CommAction>) -> Self {
         Self {
             message_watcher_tx: watcher_tx,
         }

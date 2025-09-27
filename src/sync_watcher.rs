@@ -7,11 +7,12 @@ use anyhow::Result;
 use notify::RecommendedWatcher;
 use notify_debouncer_mini::{DebounceEventResult, DebouncedEventKind, Debouncer, new_debouncer};
 
-use std::fs;
 use std::path::PathBuf;
 use std::time::Duration;
-
-use tokio::sync::watch::{Receiver, Sender, channel};
+use std::{
+    fs,
+    sync::mpsc::{self, Receiver},
+};
 
 pub struct SyncWatcher {
     file_watcher: Debouncer<RecommendedWatcher>,
@@ -23,22 +24,21 @@ impl SyncWatcher {
     pub fn new(
         syncs: Vec<FileSync>,
         nodes: Vec<NodeData>,
-        push_debounce_secs: u64,
+        push_debounce_millisecs: u64,
     ) -> Result<Self> {
-        let (watcher_tx, watcher_rx) = channel::<Option<PathBuf>>(None);
+        let (watcher_tx, watcher_rx) = mpsc::channel();
 
         let mut watcher = new_debouncer(
-            Duration::from_secs(push_debounce_secs),
+            Duration::from_millis(push_debounce_millisecs),
             move |res: DebounceEventResult| match res {
                 Ok(events) => events.iter().for_each(|e| {
                     if e.kind != DebouncedEventKind::Any {
                         return;
                     }
 
-                    println!("change on path: {:?}", &e.path);
-                    let _ = watcher_tx.send(Some(e.path.clone()));
+                    watcher_tx.send(Some(e.path.clone())).unwrap();
                 }),
-                Err(e) => println!("watcher error {e}"),
+                Err(e) => println!("- watcher error {e}"),
             },
         )?;
 
@@ -55,29 +55,16 @@ impl SyncWatcher {
         Ok(s)
     }
 
-    pub async fn check_for_changed_files(
-        &mut self,
-        msg_tx: &Sender<Vec<CommAction>>,
-    ) -> Result<()> {
-        println!("checking for file changes");
-
-        // check for evts for push
-        match self.file_watcher_rx.changed().await {
-            Ok(()) => {
-                let changed_path: Option<PathBuf> = self.file_watcher_rx.borrow().clone();
-                if let Some(changed_path) = changed_path {
-                    let actions = get_push_comm_actions(&self.syncs, &self.nodes, changed_path);
-                    if !actions.is_empty() {
-                        msg_tx.send(actions).unwrap();
-                    }
-                }
-            }
-            Err(e) => {
-                return Err(e.into());
+    pub fn get_changed_files(&mut self) -> Option<Vec<CommAction>> {
+        let changed_path = self.file_watcher_rx.try_recv();
+        if let Ok(Some(changed_path)) = changed_path {
+            let actions = get_push_comm_actions(&self.syncs, &self.nodes, changed_path);
+            if !actions.is_empty() {
+                return Some(actions);
             }
         }
 
-        Ok(())
+        None
     }
 
     // close handles the unsetup of the whole watcher
