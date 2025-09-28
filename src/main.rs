@@ -46,18 +46,18 @@ async fn main() -> Result<()> {
     let (is_running_tx, is_running_rx) = channel(true);
 
     // loop receivers of events into queues
-    println!("thread: looping events for queue");
     let event_is_running_rx = is_running_rx.clone();
     let event_conn = conn.clone();
     let event_conn_queue = conn_queue.clone();
     let event_sync_process = sync_process.clone();
     let event_sync_queue = sync_queue.clone();
     tokio::spawn(async move {
-        println!("- starting watcher sync");
+        println!("starting watcher sync");
         let mut sync_watcher =
             SyncWatcher::new(event_sync_process, config.local.push_debounce_millisecs).unwrap();
         sync_watcher.start().unwrap();
 
+        println!("looping event checker");
         loop {
             if !*event_is_running_rx.borrow() {
                 break;
@@ -78,12 +78,12 @@ async fn main() -> Result<()> {
     });
 
     // handle the queues
-    println!("thread: looping queue handling");
     let queue_is_running_rx = is_running_rx.clone();
     let queue_conn_queue = conn_queue.clone();
     let queue_conn = conn.clone();
     let queue_sync_queue = sync_queue.clone();
     tokio::spawn(async move {
+        println!("looping queues");
         loop {
             if !*queue_is_running_rx.borrow() {
                 break;

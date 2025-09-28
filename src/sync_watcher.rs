@@ -4,6 +4,7 @@ use crate::{
 };
 use anyhow::Result;
 
+use chrono::Utc;
 use notify::RecommendedWatcher;
 use notify_debouncer_mini::{DebounceEventResult, DebouncedEventKind, Debouncer, new_debouncer};
 
@@ -192,7 +193,7 @@ fn get_changed_sync_actions(
             if let Some(node) = node {
                 actions.push(CommAction::SendMessage(
                     node.node_id.clone(),
-                    get_push_sync_msg(sync),
+                    get_push_sync_msg(sync, &t.key),
                 ));
             }
         }
@@ -201,12 +202,13 @@ fn get_changed_sync_actions(
     actions
 }
 
-fn get_push_sync_msg(_sync: &FileSync) -> String {
-    let msg = "key(PATH;DATE;CHECKSUM / TICKET ID?!)";
-    msg.to_string()
+fn get_push_sync_msg(sync: &FileSync, _key: &str) -> String {
+    let blob_ticket_id = "1234";
+    let now = Utc::now();
 
-    // TODO: what about the key?! we need to make sure the user can actually send
-    //       we use the key to decrypt that depending on the node
+    // TODO: what about the key?! we use the key to decrypt that depending on 
+    format!("{};{now};{blob_ticket_id}", &sync.path).to_string()
+
     //
     // TODO: use iroh blob hashing to create the ticket
     // TODO: we send to the node the ticket id

@@ -81,7 +81,7 @@ impl Connection {
         let node = NodeId::from_str(&node_id);
         let node_addr = NodeAddr::new(node.unwrap());
 
-        // Open a connection to the accepting node
+        // open a connection to the accepting node
         let conn = self
             .router
             .endpoint()
@@ -100,8 +100,6 @@ impl Connection {
         // nothing else more to do in the connection.
         let close_msg = "bye";
         conn.close(0u32.into(), close_msg.as_bytes());
-
-        println!("- message sent");
 
         Ok(())
     }
@@ -133,7 +131,6 @@ impl ProtocolHandler for MessageProtocol {
         connection: iroh::endpoint::Connection,
     ) -> std::result::Result<(), AcceptError> {
         let node_id = connection.remote_node_id()?;
-        println!("accepted connection from {node_id}");
 
         let (mut send, mut recv) = connection
             .accept_bi()
@@ -151,7 +148,6 @@ impl ProtocolHandler for MessageProtocol {
         send.finish()?;
 
         let res = String::from_utf8_lossy(&res);
-        println!("- received: {:?}", &res);
 
         // wait until the remote closes the connection, which it does once it
         // received the response.
