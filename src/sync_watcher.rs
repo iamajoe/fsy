@@ -17,18 +17,16 @@ use std::{
 pub struct SyncWatcher {
     file_watcher: Debouncer<RecommendedWatcher>,
     file_watcher_rx: Receiver<Option<PathBuf>>,
-    syncs: Vec<FileSync>,
-    nodes: Vec<NodeData>,
+    process: SyncProcess,
+    watch_paths: Vec<String>,
 }
+
 impl SyncWatcher {
-    pub fn new(
-        syncs: Vec<FileSync>,
-        nodes: Vec<NodeData>,
-        push_debounce_millisecs: u64,
-    ) -> Result<Self> {
+    pub fn new(process: SyncProcess, push_debounce_millisecs: u64) -> Result<Self> {
         let (watcher_tx, watcher_rx) = mpsc::channel();
 
-        let mut watcher = new_debouncer(
+        // initialize the watcher
+        let watcher = new_debouncer(
             Duration::from_millis(push_debounce_millisecs),
             move |res: DebounceEventResult| match res {
                 Ok(events) => events.iter().for_each(|e| {
@@ -38,30 +36,32 @@ impl SyncWatcher {
 
                     watcher_tx.send(Some(e.path.clone())).unwrap();
                 }),
-                Err(e) => println!("- watcher error {e}"),
+                Err(e) => println!("-> watcher error {e}"),
             },
         )?;
 
-        // set the pushes, pulls not needed, handled when come in
-        let _ = set_push(&syncs, &mut watcher); // TODO: what about errors
+        let watch_paths = process.get_paths_to_watch();
 
+        // construct the final struct
         let s = Self {
+            process,
+            watch_paths,
             file_watcher: watcher,
             file_watcher_rx: watcher_rx,
-            syncs,
-            nodes,
         };
 
         Ok(s)
     }
 
-    pub fn get_changed_files(&mut self) -> Option<Vec<CommAction>> {
+    pub fn start(&mut self) -> Result<()> {
+        // listen to file changes
+        self.set_watcher_files()
+    }
+
+    pub fn get_changed_files(&self) -> Option<Vec<CommAction>> {
         let changed_path = self.file_watcher_rx.try_recv();
         if let Ok(Some(changed_path)) = changed_path {
-            let actions = get_push_comm_actions(&self.syncs, &self.nodes, changed_path);
-            if !actions.is_empty() {
-                return Some(actions);
-            }
+            return self.process.get_changed_path_actions(changed_path);
         }
 
         None
@@ -69,51 +69,74 @@ impl SyncWatcher {
 
     // close handles the unsetup of the whole watcher
     pub fn close(&mut self) -> Result<()> {
-        // handle the push side
-        for sync in self.syncs.iter() {
-            let sync_path = sync.path.clone();
+        for sync_path in self.watch_paths.iter() {
             let p = std::path::Path::new(&sync_path);
-
             // TODO: we just want to ignore error and unwatch all
             self.file_watcher.watcher().unwatch(p)?;
         }
 
         Ok(())
     }
-}
 
-fn set_push(syncs: &[FileSync], file_watcher: &mut Debouncer<RecommendedWatcher>) -> Result<()> {
-    println!("setting push");
+    fn set_watcher_files(&mut self) -> Result<()> {
+        for sync_path in self.watch_paths.iter() {
+            // set the watch on path
+            let meta = fs::metadata(sync_path)?;
+            let recurse = if meta.is_dir() {
+                notify::RecursiveMode::Recursive
+            } else {
+                notify::RecursiveMode::NonRecursive
+            };
 
-    // iterate each sync and set it up
-    for sync in syncs.iter() {
-        // handle pushes
-        let is_push = sync
-            .targets
-            .iter()
-            .any(|t| t.mode == TargetMode::Push || t.mode == TargetMode::PushPull);
-        if !is_push {
-            continue;
+            let p = std::path::Path::new(&sync_path);
+            self.file_watcher.watcher().watch(p, recurse)?;
         }
 
-        // only set watch if this is push
-        let sync_path = sync.path.clone();
-        println!("watching push file: {}", &sync_path);
-        let meta = fs::metadata(&sync_path)?;
-        let recurse = if meta.is_dir() {
-            notify::RecursiveMode::Recursive
-        } else {
-            notify::RecursiveMode::NonRecursive
-        };
-
-        let p = std::path::Path::new(&sync_path);
-        file_watcher.watcher().watch(p, recurse)?;
+        Ok(())
     }
-
-    Ok(())
 }
 
-fn get_push_comm_actions(
+#[derive(Clone)]
+pub struct SyncProcess {
+    syncs: Vec<FileSync>,
+    nodes: Vec<NodeData>,
+}
+
+impl SyncProcess {
+    pub fn new(syncs: Vec<FileSync>, nodes: Vec<NodeData>) -> Self {
+        Self { syncs, nodes }
+    }
+
+    pub fn get_paths_to_watch(&self) -> Vec<String> {
+        // find which paths we should be watching
+        let mut watch_paths: Vec<String> = vec![];
+        for sync in self.syncs.iter() {
+            let is_push = sync
+                .targets
+                .iter()
+                .any(|t| t.mode == TargetMode::Push || t.mode == TargetMode::PushPull);
+            if !is_push {
+                continue;
+            }
+
+            let sync_path = sync.path.clone();
+            watch_paths.push(sync_path);
+        }
+
+        watch_paths
+    }
+
+    pub fn get_changed_path_actions(&self, changed_path: PathBuf) -> Option<Vec<CommAction>> {
+        let actions = get_changed_sync_actions(&self.syncs, &self.nodes, changed_path);
+        if !actions.is_empty() {
+            return Some(actions);
+        }
+
+        None
+    }
+}
+
+fn get_changed_sync_actions(
     syncs: &[FileSync],
     nodes: &[NodeData],
     changed_path: PathBuf,
@@ -167,7 +190,6 @@ fn get_push_comm_actions(
             // find the right trustee data
             let node = nodes.iter().find(|n| n.name == t.trustee_name);
             if let Some(node) = node {
-                println!("=> SENDING PUSH: {:?}", &sync.path);
                 actions.push(CommAction::SendMessage(
                     node.node_id.clone(),
                     get_push_sync_msg(sync),

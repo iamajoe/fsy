@@ -5,7 +5,7 @@ use std::{env, ffi::OsString, fs, path::Path};
 
 const CONFIG_FILE_NAME: &str = "fsy/config.toml";
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct LocalNodeData {
     pub public_key: String,
     pub secret_key: [u8; 32],
@@ -19,7 +19,7 @@ pub struct NodeData {
     pub node_id: String,
 }
 
-#[derive(Serialize, Deserialize, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub enum TargetMode {
     #[serde(rename = "push")]
     Push,
@@ -29,21 +29,21 @@ pub enum TargetMode {
     Pull,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct FileSyncTarget {
     pub mode: TargetMode,     // is it only push? only pull? both?
     pub trustee_name: String, // trustee name, the descritive
     pub key: String,          // used to check if the user has access to target
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct FileSync {
     pub name: String, // name identifier to be passed as unique communicator between nodes
     pub path: String, // path for the file / folder
     pub targets: Vec<FileSyncTarget>, // targets to whom push / pull
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Config {
     #[serde(skip)]
     pub config_path: OsString,

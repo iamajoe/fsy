@@ -3,15 +3,17 @@ use iroh::{
     Endpoint, NodeAddr, NodeId, SecretKey,
     protocol::{self, AcceptError, ProtocolHandler},
 };
-use std::{path::Path, str::FromStr, sync::mpsc};
+use std::{path::Path, str::FromStr};
+use tokio::sync::watch;
 
 use crate::entity::CommAction;
 
 const MESSAGE_PROTOCOL_ALPN: &[u8] = b"iroh/ping/0";
 
+#[derive(Clone)]
 pub struct Connection {
     router: protocol::Router,
-    message_watcher_rx: mpsc::Receiver<CommAction>,
+    message_watcher_rx: watch::Receiver<Option<CommAction>>,
 }
 
 impl Connection {
@@ -37,7 +39,7 @@ impl Connection {
 
         // TODO: how can i check for the allowed list?
         //       how do i know that the user can actually connect?
-        let (message_watcher_tx, message_watcher_rx) = mpsc::channel();
+        let (message_watcher_tx, message_watcher_rx) = watch::channel(None);
         let message_protocol = MessageProtocol::new(message_watcher_tx);
         let router = protocol::Router::builder(endpoint.clone())
             // .accept(iroh_blobs::ALPN, blobs)
@@ -60,16 +62,22 @@ impl Connection {
         self.router.endpoint().node_id().to_string()
     }
 
-    pub async fn close(&self) -> Result<()> {
-        self.router.endpoint().close().await;
-        self.router.shutdown().await?;
+    pub fn get_events(&mut self) -> Result<Option<CommAction>> {
+        // only proceed if something has changed
+        if !self.message_watcher_rx.has_changed().unwrap() {
+            return Ok(None);
+        }
 
-        Ok(())
+        // check the changed data
+        let watch_msg = self.message_watcher_rx.borrow_and_update().to_owned();
+        if let Some(CommAction::ReceiveMessage(node_id, message)) = watch_msg {
+            return Ok(Some(CommAction::ReceiveMessage(node_id, message)));
+        }
+
+        Ok(None)
     }
 
     pub async fn send_msg_to_node(&self, node_id: String, msg: String) -> Result<()> {
-        println!("sending message to node: {node_id}");
-
         let node = NodeId::from_str(&node_id);
         let node_addr = NodeAddr::new(node.unwrap());
 
@@ -98,23 +106,21 @@ impl Connection {
         Ok(())
     }
 
-    pub fn get_events(&mut self) -> Option<CommAction> {
-        let watch_msg = self.message_watcher_rx.try_recv();
-        if let Ok(CommAction::ReceiveMessage(node_id, message)) = watch_msg {
-            return Some(CommAction::ReceiveMessage(node_id, message));
-        }
+    pub async fn close(&self) -> Result<()> {
+        self.router.endpoint().close().await;
+        self.router.shutdown().await?;
 
-        None
+        Ok(())
     }
 }
 
 #[derive(Debug, Clone)]
 struct MessageProtocol {
-    message_watcher_tx: mpsc::Sender<CommAction>,
+    message_watcher_tx: watch::Sender<Option<CommAction>>,
 }
 
 impl MessageProtocol {
-    pub fn new(watcher_tx: mpsc::Sender<CommAction>) -> Self {
+    pub fn new(watcher_tx: watch::Sender<Option<CommAction>>) -> Self {
         Self {
             message_watcher_tx: watcher_tx,
         }
@@ -151,10 +157,12 @@ impl ProtocolHandler for MessageProtocol {
         // received the response.
         connection.closed().await;
 
-        let _ = self.message_watcher_tx.send(CommAction::ReceiveMessage(
-            node_id.to_string(),
-            res.to_string(),
-        ));
+        let _ = self
+            .message_watcher_tx
+            .send(Some(CommAction::ReceiveMessage(
+                node_id.to_string(),
+                res.to_string(),
+            )));
 
         Ok(())
     }

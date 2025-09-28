@@ -1,5 +1,6 @@
 pub const MAX_CAPACITY: usize = 1000;
 
+#[derive(Clone)]
 pub struct Queue<T> {
     capacity: usize,
     head: usize,
@@ -60,6 +61,7 @@ impl<T> Queue<T> {
         self.buffer[self.get_next_position()].is_some()
     }
 
+    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         // a queue without capacity is always empty
         if self.capacity == 0 {
@@ -109,10 +111,12 @@ impl<T> Queue<T> {
         item
     }
 
+    #[allow(dead_code)]
     pub fn peek(&self) -> Option<&T> {
         self.buffer[self.get_first_position()].as_ref()
     }
 
+    #[allow(dead_code)]
     pub fn clear(&mut self) {
         self.head = 0;
         self.tail = 0;
