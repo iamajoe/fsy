@@ -1,6 +1,6 @@
+mod actions;
 mod config;
 mod connection;
-mod entity;
 mod key;
 mod queue;
 mod sync_watcher;
@@ -13,15 +13,13 @@ use tokio::sync::Mutex;
 use tokio::sync::watch::channel;
 use tokio::time::sleep;
 
+use self::actions::CommAction;
 use self::connection::Connection;
-use self::entity::CommAction;
 use self::sync_watcher::{SyncProcess, SyncWatcher};
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // TODO: retrieve from cli, like --config "path"
-    let user_relative_path = "";
-    let config = config::Config::new(user_relative_path).unwrap();
+    let config = config::Config::new("").unwrap();
 
     // setup the connection
     println!("starting connection");
@@ -35,7 +33,7 @@ async fn main() -> Result<()> {
 
     // setup the process
     println!("initializing sync process");
-    let sync_process = SyncProcess::new(config.file_syncs.clone(), config.trustees.clone());
+    let sync_process = SyncProcess::new(config.file_syncs.clone());
 
     // setup the queues
     let raw_queue: queue::Queue<CommAction> = queue::Queue::new(queue::MAX_CAPACITY);
@@ -124,20 +122,26 @@ async fn run_event_check(
     sync_queue: &Arc<Mutex<queue::Queue<CommAction>>>,
 ) -> Result<SyncWatcher> {
     // check for events on the connection
+    let conn_event: Option<connection::ConnEvent>;
     {
         // NOTE: setup scope because of the lock
-        if let Ok(Some(msg)) = conn.lock().await.get_events() {
-            sync_queue.lock().await.push(msg);
+        conn_event = conn.lock().await.get_events().unwrap();
+    }
+    if let Some(connection::ConnEvent::ReceivedMessage(node_id, raw_msg)) = conn_event {
+        let action = actions::parse_msg_to_action(node_id, raw_msg);
+        if let Some(action) = action {
+            sync_queue.lock().await.push(action);
         }
     }
 
     // check for events on the watcher
-    if let Some(msgs) = sync.get_changed_files() {
+    if let Some(files) = sync.get_changed_files()
+        && !files.is_empty()
+    {
+        let config = config::Config::new("").unwrap();
+        let msgs = actions::get_changed_files_actions(files, config.trustees);
         if !msgs.is_empty() {
-            let mut queue = conn_queue.lock().await;
-            for msg in msgs {
-                queue.push(msg);
-            }
+            conn_queue.lock().await.push_multiple(msgs);
         }
     }
 
@@ -167,13 +171,12 @@ async fn run_queue_check(
         }
     }
 
-    if let Some(CommAction::ReceiveMessage(node_id, msg)) = sync_action {
-        println!("sync_queue: receiving message");
-        println!("- \"{msg}\" to node: \"{node_id}\"");
+    if let Some(CommAction::FileHasChanged(node_id, changed_path, timestamp)) = sync_action {
+        println!("sync_queue: file_has_changed");
+        println!("- \"{changed_path}\", at \"{timestamp}\", from node: \"{node_id}\"");
     }
 
     // TODO: check if key is fine
-    // TODO: check if node has a pull
     // TODO: check if msg is needed and if we want to download, if we want, request the ticket
     // TODO: if the msg is a download message, provide the blob id
     // TODO: if the msg is a blob id, download

@@ -1,10 +1,6 @@
-use crate::{
-    config::{FileSync, NodeData, TargetMode},
-    entity::CommAction,
-};
+use crate::config::{FileSync, FileSyncTarget, TargetMode};
 use anyhow::Result;
 
-use chrono::Utc;
 use notify::RecommendedWatcher;
 use notify_debouncer_mini::{DebounceEventResult, DebouncedEventKind, Debouncer, new_debouncer};
 
@@ -59,10 +55,11 @@ impl SyncWatcher {
         self.set_watcher_files()
     }
 
-    pub fn get_changed_files(&self) -> Option<Vec<CommAction>> {
+    pub fn get_changed_files(&self) -> Option<Vec<FileSync>> {
         let changed_path = self.file_watcher_rx.try_recv();
         if let Ok(Some(changed_path)) = changed_path {
-            return self.process.get_changed_path_actions(changed_path);
+            let targets = self.process.get_path_targets(changed_path);
+            return Some(targets);
         }
 
         None
@@ -100,12 +97,11 @@ impl SyncWatcher {
 #[derive(Clone)]
 pub struct SyncProcess {
     syncs: Vec<FileSync>,
-    nodes: Vec<NodeData>,
 }
 
 impl SyncProcess {
-    pub fn new(syncs: Vec<FileSync>, nodes: Vec<NodeData>) -> Self {
-        Self { syncs, nodes }
+    pub fn new(syncs: Vec<FileSync>) -> Self {
+        Self { syncs }
     }
 
     pub fn get_paths_to_watch(&self) -> Vec<String> {
@@ -127,95 +123,45 @@ impl SyncProcess {
         watch_paths
     }
 
-    pub fn get_changed_path_actions(&self, changed_path: PathBuf) -> Option<Vec<CommAction>> {
-        let actions = get_changed_sync_actions(&self.syncs, &self.nodes, changed_path);
-        if !actions.is_empty() {
-            return Some(actions);
-        }
-
-        None
+    pub fn get_path_targets(&self, changed_path: PathBuf) -> Vec<FileSync> {
+        get_path_sync_targets(&self.syncs, changed_path.clone())
     }
 }
 
-fn get_changed_sync_actions(
-    syncs: &[FileSync],
-    nodes: &[NodeData],
-    changed_path: PathBuf,
-) -> Vec<CommAction> {
-    let mut actions: Vec<CommAction> = vec![];
+fn get_path_sync_targets(syncs: &[FileSync], file_path: PathBuf) -> Vec<FileSync> {
+    let mut file_targets: Vec<FileSync> = vec![];
 
-    let list: Vec<&FileSync> = syncs
-        .iter()
-        .filter(|sync| {
-            let sync_path = PathBuf::from(&sync.path);
-            if sync_path != changed_path {
-                return false;
-            }
-
-            let is_push = sync
-                .targets
-                .iter()
-                .any(|t| t.mode == TargetMode::Push || t.mode == TargetMode::PushPull);
-            if !is_push {
-                return false;
-            }
-
-            true
-        })
-        .collect();
-
-    // iterate each sync and targets send through the node
-    for sync in list {
-        let has_push = sync
-            .targets
-            .iter()
-            .any(|t| t.mode == TargetMode::Push || t.mode == TargetMode::PushPull);
-        if !has_push {
+    // iterate each sync to find all the targets we need
+    for sync in syncs {
+        // check if path has changed
+        let sync_path = PathBuf::from(&sync.path);
+        if sync_path != file_path {
             continue;
         }
 
-        // TODO: build the ticket id / checksum
-        //       these take space on memory / disk, we need to make sure there is at least
-        //       one target that is interested, we need to ping him and wait for his response
+        // gather pushing targets
+        let push_targets: Vec<FileSyncTarget> = sync
+            .targets
+            .iter()
+            .filter_map(|t| {
+                if t.mode != TargetMode::Push && t.mode != TargetMode::PushPull {
+                    return None;
+                }
 
-        for t in &sync.targets {
-            let is_push = t.mode == TargetMode::Push || t.mode == TargetMode::PushPull;
-            if !is_push {
-                continue;
-            }
-
-            // TODO: do not send in if coming in after pull for example
-            //       need to check chunk or something to make sure we don't loop
-            //       ourselves when in push-pull modes
-
-            // find the right trustee data
-            let node = nodes.iter().find(|n| n.name == t.trustee_name);
-            if let Some(node) = node {
-                actions.push(CommAction::SendMessage(
-                    node.node_id.clone(),
-                    get_push_sync_msg(sync, &t.key),
-                ));
-            }
+                Some(t.clone())
+            })
+            .collect();
+        if push_targets.is_empty() {
+            continue;
         }
+
+        // push the file target file
+        file_targets.push(FileSync {
+            name: sync.name.clone(),
+            path: sync.path.clone(),
+            targets: push_targets,
+        });
     }
 
-    actions
-}
-
-fn get_push_sync_msg(sync: &FileSync, _key: &str) -> String {
-    let blob_ticket_id = "1234";
-    let now = Utc::now();
-
-    // TODO: what about the key?! we use the key to decrypt that depending on 
-    format!("{};{now};{blob_ticket_id}", &sync.path).to_string()
-
-    //
-    // TODO: use iroh blob hashing to create the ticket
-    // TODO: we send to the node the ticket id
-    // TODO: on the node side, we download the ticket
-    // TODO: what if the node is not on?! we don't want to keep this stuff opening
-    //       right?! because the tickets will consume either memory or file system
-    //       and files can be huge
-    //       as such, we want to ping the node to see if he is interested in
-    //       downloading
+    file_targets
 }

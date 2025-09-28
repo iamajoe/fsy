@@ -92,6 +92,13 @@ impl<T> Queue<T> {
         }
     }
 
+    // TODO: need to test it
+    pub fn push_multiple(&mut self, item_list: Vec<T>) {
+        for item in item_list {
+            self.push(item);
+        }
+    }
+
     pub fn pop(&mut self) -> Option<T> {
         if self.is_empty() {
             return None;

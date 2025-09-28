@@ -6,14 +6,18 @@ use iroh::{
 use std::{path::Path, str::FromStr};
 use tokio::sync::watch;
 
-use crate::entity::CommAction;
-
 const MESSAGE_PROTOCOL_ALPN: &[u8] = b"iroh/ping/0";
+
+#[derive(Debug, Clone)]
+pub enum ConnEvent {
+    // node_id, raw_msg
+    ReceivedMessage(String, String)
+}
 
 #[derive(Clone)]
 pub struct Connection {
     router: protocol::Router,
-    message_watcher_rx: watch::Receiver<Option<CommAction>>,
+    message_watcher_rx: watch::Receiver<Option<ConnEvent>>,
 }
 
 impl Connection {
@@ -62,19 +66,15 @@ impl Connection {
         self.router.endpoint().node_id().to_string()
     }
 
-    pub fn get_events(&mut self) -> Result<Option<CommAction>> {
+    pub fn get_events(&mut self) -> Result<Option<ConnEvent>> {
         // only proceed if something has changed
         if !self.message_watcher_rx.has_changed().unwrap() {
             return Ok(None);
         }
 
         // check the changed data
-        let watch_msg = self.message_watcher_rx.borrow_and_update().to_owned();
-        if let Some(CommAction::ReceiveMessage(node_id, message)) = watch_msg {
-            return Ok(Some(CommAction::ReceiveMessage(node_id, message)));
-        }
-
-        Ok(None)
+        let watch_msg = self.message_watcher_rx.borrow_and_update().clone();
+        Ok(watch_msg)
     }
 
     pub async fn send_msg_to_node(&self, node_id: String, msg: String) -> Result<()> {
@@ -114,11 +114,11 @@ impl Connection {
 
 #[derive(Debug, Clone)]
 struct MessageProtocol {
-    message_watcher_tx: watch::Sender<Option<CommAction>>,
+    message_watcher_tx: watch::Sender<Option<ConnEvent>>,
 }
 
 impl MessageProtocol {
-    pub fn new(watcher_tx: watch::Sender<Option<CommAction>>) -> Self {
+    pub fn new(watcher_tx: watch::Sender<Option<ConnEvent>>) -> Self {
         Self {
             message_watcher_tx: watcher_tx,
         }
@@ -153,12 +153,10 @@ impl ProtocolHandler for MessageProtocol {
         // received the response.
         connection.closed().await;
 
+        let evt = ConnEvent::ReceivedMessage(node_id.to_string(), res.to_string());
         let _ = self
             .message_watcher_tx
-            .send(Some(CommAction::ReceiveMessage(
-                node_id.to_string(),
-                res.to_string(),
-            )));
+            .send(Some(evt));
 
         Ok(())
     }
