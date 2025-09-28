@@ -150,7 +150,7 @@ async fn run_event_check(
 
 async fn run_queue_check(
     conn: &Arc<Mutex<Connection>>,
-    _sync: &SyncProcess,
+    sync: &SyncProcess,
     conn_queue: &Arc<Mutex<queue::Queue<CommAction>>>,
     sync_queue: &Arc<Mutex<queue::Queue<CommAction>>>,
 ) -> Result<()> {
@@ -163,17 +163,34 @@ async fn run_queue_check(
     }
 
     // handle actions incoming to the connection
-    if let Some(CommAction::SendMessage(node_id, msg)) = conn_action {
-        println!("conn_queue: sending message");
-        println!("- \"{msg}\" to node: \"{node_id}\"");
-        if let Err(e) = conn.lock().await.send_msg_to_node(node_id, msg).await {
-            println!("- error: {e}");
-        }
+    match conn_action {
+        Some(CommAction::SendMessage(node_id, msg)) => {
+            println!("conn_queue: sending message");
+            println!("- \"{msg}\" to node: \"{node_id}\"");
+            if let Err(e) = conn.lock().await.send_msg_to_node(node_id, msg).await {
+                println!("- error: {e}");
+            }
+        },
+        Some(CommAction::RequestFile(node_id, target_name)) => {
+            // TODO: handle the request file
+            println!("conn_queue: requesting file");
+            println!("- \"{target_name}\" to node: \"{node_id}\"");
+        },
+        _ => {}
     }
 
-    if let Some(CommAction::FileHasChanged(node_id, changed_path, timestamp)) = sync_action {
-        println!("sync_queue: file_has_changed");
-        println!("- \"{changed_path}\", at \"{timestamp}\", from node: \"{node_id}\"");
+    if let Some(CommAction::FileHasChanged(node_id, target_name, timestamp)) = sync_action {
+        let syncs = sync.get_pull_syncs_by_name(&target_name, timestamp);
+        if !syncs.is_empty() {
+            let config = config::Config::new("").unwrap();
+            let msgs = actions::get_request_files_actions(syncs, config.trustees);
+            if !msgs.is_empty() {
+                // TODO: is this listening to this file? if it is request a download
+                println!("sync_queue: file_has_changed");
+                println!("- \"{target_name}\", at \"{timestamp}\", from node: \"{node_id}\"");
+                conn_queue.lock().await.push_multiple(msgs);
+            }
+        }
     }
 
     // TODO: check if key is fine

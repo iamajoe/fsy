@@ -1,6 +1,7 @@
 use crate::config::{FileSync, FileSyncTarget, TargetMode};
 use anyhow::Result;
 
+use chrono::{DateTime, Utc};
 use notify::RecommendedWatcher;
 use notify_debouncer_mini::{DebounceEventResult, DebouncedEventKind, Debouncer, new_debouncer};
 
@@ -58,7 +59,7 @@ impl SyncWatcher {
     pub fn get_changed_files(&self) -> Option<Vec<FileSync>> {
         let changed_path = self.file_watcher_rx.try_recv();
         if let Ok(Some(changed_path)) = changed_path {
-            let targets = self.process.get_path_targets(changed_path);
+            let targets = self.process.get_push_syncs_by_path(changed_path.to_str()?);
             return Some(targets);
         }
 
@@ -123,35 +124,80 @@ impl SyncProcess {
         watch_paths
     }
 
-    pub fn get_path_targets(&self, changed_path: PathBuf) -> Vec<FileSync> {
-        get_path_sync_targets(&self.syncs, changed_path.clone())
+    pub fn get_push_syncs_by_path(&self, file_path: &str) -> Vec<FileSync> {
+        get_syncs_by_path(
+            &self.syncs,
+            file_path,
+            vec![TargetMode::Push, TargetMode::PushPull],
+        )
+    }
+
+    pub fn get_pull_syncs_by_name(
+        &self,
+        target_name: &str,
+        _timestamp: DateTime<Utc>,
+    ) -> Vec<FileSync> {
+        // TODO: what about timestamp?
+        //       we should be careful so we don't download something
+        //       that has just been downloaded for example
+        get_syncs_by_name(
+            &self.syncs,
+            target_name,
+            vec![TargetMode::Pull, TargetMode::PushPull],
+        )
     }
 }
 
-fn get_path_sync_targets(syncs: &[FileSync], file_path: PathBuf) -> Vec<FileSync> {
+fn get_syncs_by_path(
+    syncs: &[FileSync],
+    file_path: &str,
+    target_modes: Vec<TargetMode>,
+) -> Vec<FileSync> {
+    let syncs: Vec<FileSync> = syncs.iter().filter_map(|sync| {
+        if sync.path != file_path {
+            return None;
+        }
+
+        Some(sync.clone())
+    }).collect();
+
+    get_syncs_by_target(&syncs, target_modes)
+}
+
+fn get_syncs_by_name(
+    syncs: &[FileSync],
+    target_name: &str,
+    target_modes: Vec<TargetMode>,
+) -> Vec<FileSync> {
+    let syncs: Vec<FileSync> = syncs.iter().filter_map(|sync| {
+        if sync.name != target_name {
+            return None;
+        }
+
+        Some(sync.clone())
+    }).collect();
+
+    get_syncs_by_target(&syncs, target_modes)
+}
+
+fn get_syncs_by_target(syncs: &[FileSync], target_modes: Vec<TargetMode>) -> Vec<FileSync> {
     let mut file_targets: Vec<FileSync> = vec![];
 
     // iterate each sync to find all the targets we need
     for sync in syncs {
-        // check if path has changed
-        let sync_path = PathBuf::from(&sync.path);
-        if sync_path != file_path {
-            continue;
-        }
-
         // gather pushing targets
-        let push_targets: Vec<FileSyncTarget> = sync
+        let targets: Vec<FileSyncTarget> = sync
             .targets
             .iter()
             .filter_map(|t| {
-                if t.mode != TargetMode::Push && t.mode != TargetMode::PushPull {
+                if !target_modes.contains(&t.mode) {
                     return None;
                 }
 
                 Some(t.clone())
             })
             .collect();
-        if push_targets.is_empty() {
+        if targets.is_empty() {
             continue;
         }
 
@@ -159,7 +205,7 @@ fn get_path_sync_targets(syncs: &[FileSync], file_path: PathBuf) -> Vec<FileSync
         file_targets.push(FileSync {
             name: sync.name.clone(),
             path: sync.path.clone(),
-            targets: push_targets,
+            targets,
         });
     }
 

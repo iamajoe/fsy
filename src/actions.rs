@@ -3,6 +3,7 @@ use chrono::{DateTime, Utc};
 use crate::config::{FileSync, NodeData};
 
 const FILE_HAS_CHANGED_NAMESPACE: u8 = 0;
+const REQUEST_FILE_NAMESPACE: u8 = 1;
 
 #[derive(Debug, Clone)]
 pub enum CommAction {
@@ -17,11 +18,11 @@ pub enum CommAction {
     // Actual actions
 
     // FileHasChanged used for when the pusher wants to inform that a file has changed
-    // - FileHasChanged(node_id, file_path, change_date)
+    // - FileHasChanged(node_id, target_name, change_date)
     FileHasChanged(String, String, DateTime<Utc>),
 
     // RequestFile used for the puller to request for a specific file
-    // - RequestFile(node_id, file_path)
+    // - RequestFile(node_id, target_name)
     RequestFile(String, String),
 }
 
@@ -39,6 +40,37 @@ pub fn get_changed_files_actions(
     file_targets
         .iter()
         .flat_map(|file_target| {
+            let target_name = file_target.name.clone();
+            let mut actions: Vec<CommAction> = vec![];
+
+            for target in file_target.targets.iter() {
+                let node = nodes.iter().find(|n| n.name == target.trustee_name);
+                if let Some(node) = node {
+                    // TODO: what about the key?! we use the key to decrypt that depending on
+                    let msg = format!("[{namespace}]->{now};{}", &target_name).to_string();
+                    actions.push(CommAction::SendMessage(node.node_id.clone(), msg));
+                }
+            }
+
+            actions
+        })
+        .collect()
+}
+
+pub fn get_request_files_actions(
+    file_targets: Vec<FileSync>,
+    nodes: Vec<NodeData>,
+) -> Vec<CommAction> {
+    if file_targets.is_empty() {
+        return vec![];
+    }
+
+    let namespace = REQUEST_FILE_NAMESPACE;
+    let now = Utc::now().timestamp();
+
+    file_targets
+        .iter()
+        .flat_map(|file_target| {
             let changed_path = file_target.path.clone();
             let mut actions: Vec<CommAction> = vec![];
 
@@ -47,7 +79,7 @@ pub fn get_changed_files_actions(
                 if let Some(node) = node {
                     // TODO: what about the key?! we use the key to decrypt that depending on
                     let msg = format!("[{namespace}]->{now};{}", &changed_path).to_string();
-                    actions.push(CommAction::SendMessage(node.node_id.clone(), msg));
+                    actions.push(CommAction::RequestFile(node.node_id.clone(), msg));
                 }
             }
 
@@ -69,10 +101,16 @@ pub fn parse_msg_to_action(node_id: String, raw_msg: String) -> Option<CommActio
         if module.contains(&namespace_str) {
             return parse_file_has_changed_to_action(node_id, raw_msg);
         }
+
+        // check for request file 
+        let namespace = REQUEST_FILE_NAMESPACE;
+        let namespace_str = format!("[{namespace}");
+        if module.contains(&namespace_str) {
+            return parse_request_file_to_action(node_id, raw_msg);
+        }
     }
 
     None
-    // TODO: need to handle request file as well
 }
 
 fn parse_file_has_changed_to_action(node_id: String, raw_msg: &str) -> Option<CommAction> {
@@ -94,4 +132,14 @@ fn parse_file_has_changed_to_action(node_id: String, raw_msg: &str) -> Option<Co
     }
 
     None
+}
+
+fn parse_request_file_to_action(node_id: String, raw_msg: &str) -> Option<CommAction> {
+    let res: Vec<&str> = raw_msg.split(";").collect();
+    if res.len() != 2 {
+        return None;
+    }
+
+    // TODO: should we care about the timestamp?!
+    Some(CommAction::RequestFile(node_id, res[0].to_owned()))
 }
