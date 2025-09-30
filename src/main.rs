@@ -9,8 +9,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
-use tokio::sync::Mutex;
-use tokio::sync::watch::channel;
+use tokio::sync::{Mutex, watch::channel};
 use tokio::time::sleep;
 
 use self::actions::CommAction;
@@ -170,15 +169,16 @@ async fn run_queue_check(
             if let Err(e) = conn.lock().await.send_msg_to_node(node_id, msg).await {
                 println!("- error: {e}");
             }
-        },
+        }
         Some(CommAction::RequestFile(node_id, target_name)) => {
             // TODO: handle the request file
             println!("conn_queue: requesting file");
             println!("- \"{target_name}\" to node: \"{node_id}\"");
-        },
+        }
         _ => {}
     }
 
+    // handle actions incoming to the sync
     if let Some(CommAction::FileHasChanged(node_id, target_name, timestamp)) = sync_action {
         let syncs = sync.get_pull_syncs_by_name(&target_name, timestamp);
         if !syncs.is_empty() {
