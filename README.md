@@ -44,7 +44,7 @@ key = "1" # key used to encrypt
 [local]
 # set of keys to build up your local node id
 public_key = "..."
-secret_key = [...]
+secret_key = [1]
 push_debounce_millisecs = 500 # run a push check every x ms
 loop_debounce_millisecs = 250 # runs queue and events checks every x ms
 ```
