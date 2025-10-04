@@ -4,6 +4,7 @@ use crate::config::{FileSync, NodeData};
 
 const FILE_HAS_CHANGED_NAMESPACE: u8 = 0;
 const REQUEST_FILE_NAMESPACE: u8 = 1;
+const DOWNLOAD_FILE_NAMESPACE: u8 = 2;
 
 #[derive(Debug, Clone)]
 pub enum CommAction {
@@ -24,6 +25,10 @@ pub enum CommAction {
     // RequestFile used for the puller to request for a specific file
     // - RequestFile(node_id, target_name)
     RequestFile(String, String),
+
+    // DownloadFile used to send the ticket id to the puller
+    // - DownloadFile(node_id, ticket_id)
+    DownloadFile(String, String),
 }
 
 pub fn get_changed_files_actions(
@@ -65,6 +70,9 @@ pub fn get_request_files_actions(
         return vec![];
     }
 
+    println!("requesting files: ");
+    dbg!(&file_targets);
+
     let namespace = REQUEST_FILE_NAMESPACE;
     let now = Utc::now().timestamp();
 
@@ -88,6 +96,16 @@ pub fn get_request_files_actions(
         .collect()
 }
 
+pub fn get_download_files_actions(ticket_id: String, node_ids: Vec<String>) -> Vec<CommAction> {
+    let namespace = DOWNLOAD_FILE_NAMESPACE;
+    let now = Utc::now().timestamp();
+
+    node_ids.iter().map(|node_id| {
+        let msg = format!("[{namespace}]->{now};{}", &ticket_id).to_string();
+        CommAction::DownloadFile(node_id.clone(), msg)
+    }).collect()
+}
+
 pub fn parse_msg_to_action(node_id: String, raw_msg: String) -> Option<CommAction> {
     // check if we have a module
     let mod_sep = raw_msg.split_once("]->");
@@ -95,6 +113,7 @@ pub fn parse_msg_to_action(node_id: String, raw_msg: String) -> Option<CommActio
         let module = raw_msg.0;
         let raw_msg = raw_msg.1;
 
+        // TODO: could change this to a switch style
         // check for file has changed
         let namespace = FILE_HAS_CHANGED_NAMESPACE;
         let namespace_str = format!("[{namespace}");
@@ -102,11 +121,18 @@ pub fn parse_msg_to_action(node_id: String, raw_msg: String) -> Option<CommActio
             return parse_file_has_changed_to_action(node_id, raw_msg);
         }
 
-        // check for request file 
+        // check for request file
         let namespace = REQUEST_FILE_NAMESPACE;
         let namespace_str = format!("[{namespace}");
         if module.contains(&namespace_str) {
             return parse_request_file_to_action(node_id, raw_msg);
+        }
+
+        // check for download file
+        let namespace = DOWNLOAD_FILE_NAMESPACE;
+        let namespace_str = format!("[{namespace}");
+        if module.contains(&namespace_str) {
+            return parse_download_file_to_action(node_id, raw_msg);
         }
     }
 
@@ -142,4 +168,14 @@ fn parse_request_file_to_action(node_id: String, raw_msg: &str) -> Option<CommAc
 
     // TODO: should we care about the timestamp?!
     Some(CommAction::RequestFile(node_id, res[0].to_owned()))
+}
+
+fn parse_download_file_to_action(node_id: String, raw_msg: &str) -> Option<CommAction> {
+    let res: Vec<&str> = raw_msg.split(";").collect();
+    if res.len() != 2 {
+        return None;
+    }
+
+    // TODO: should we care about the timestamp?!
+    Some(CommAction::DownloadFile(node_id, res[0].to_owned()))
 }

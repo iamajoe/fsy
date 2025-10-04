@@ -114,6 +114,12 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
+// run_event_check is run when there is an event on the connection
+// or the sync process. For example:
+// - a received message through the connection
+//   - it parses then the message to be of the type of action
+// - files changed on the syncing process
+//   - it creates then actions to send through the connection
 async fn run_event_check(
     conn: &Arc<Mutex<Connection>>,
     sync: SyncWatcher,
@@ -147,6 +153,10 @@ async fn run_event_check(
     Ok(sync)
 }
 
+// run_queue_check runs all the queue items we have be it for
+// the connection or the syncing process. for example:
+// - if on the connection, it converts the action and sends a message
+// - if on the sync, it consumes an action and performs
 async fn run_queue_check(
     conn: &Arc<Mutex<Connection>>,
     sync: &SyncProcess,
@@ -170,31 +180,42 @@ async fn run_queue_check(
                 println!("- error: {e}");
             }
         }
+        // a request has been done by the puller, as such we prepare the ticket id
+        // and send the message to the puller
         Some(CommAction::RequestFile(node_id, target_name)) => {
+            let ticket_id = "".to_string();
             // TODO: handle the request file
             println!("conn_queue: requesting file");
             println!("- \"{target_name}\" to node: \"{node_id}\"");
+
+            let actions = actions::get_download_files_actions(ticket_id, vec![node_id]);
+            // TODO: do we have this target?!
+            // TODO: check if msg is needed and if we want to download, if we want, request the ticket
         }
         _ => {}
     }
 
     // handle actions incoming to the sync
+    // received a target changed, lets then request the file if that is the case
     if let Some(CommAction::FileHasChanged(node_id, target_name, timestamp)) = sync_action {
+        // first retrieve all the target syncs where we have a pull, no point for the push
         let syncs = sync.get_pull_syncs_by_name(&target_name, timestamp);
         if !syncs.is_empty() {
             let config = config::Config::new("").unwrap();
-            let msgs = actions::get_request_files_actions(syncs, config.trustees);
-            if !msgs.is_empty() {
+            // get all the request target actions to request to the pusher
+            let actions = actions::get_request_files_actions(syncs, config.trustees);
+            if !actions.is_empty() {
                 // TODO: is this listening to this file? if it is request a download
                 println!("sync_queue: file_has_changed");
                 println!("- \"{target_name}\", at \"{timestamp}\", from node: \"{node_id}\"");
-                conn_queue.lock().await.push_multiple(msgs);
+                // cache the actions so that the event looper can send the requests
+                // through the wire
+                conn_queue.lock().await.push_multiple(actions);
             }
         }
     }
 
     // TODO: check if key is fine
-    // TODO: check if msg is needed and if we want to download, if we want, request the ticket
     // TODO: if the msg is a download message, provide the blob id
     // TODO: if the msg is a blob id, download
 
