@@ -10,6 +10,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
+use chrono::Utc;
 use tokio::sync::{Mutex, watch::channel};
 use tokio::time::sleep;
 
@@ -185,8 +186,11 @@ async fn run_queue_check(
                 return Ok(());
             }
 
+            let start = Utc::now().timestamp_millis();
+            println!("- performing action: start");
             let res = perform_action(conn, sync_process, actions_queue, action).await;
-            println!("- action handled");
+            let time_spent = Utc::now().timestamp_millis() - start;
+            println!("- performing action: end. took: {time_spent}");
 
             res
         }
