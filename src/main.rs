@@ -179,6 +179,11 @@ async fn run_queue_check(
         action = actions_queue.lock().await.pop();
     }
 
+    // do nothing with the right action
+    if let Some(CommAction::Unknown) = action {
+        return Ok(());
+    }
+
     let res = perform_action(conn, sync_process, actions_queue, action).await;
     println!("- action handled");
 
