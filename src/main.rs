@@ -125,6 +125,7 @@ async fn run_event_check(
 
     // check for events on the connection
     if let Some(connection::ConnEvent::ReceivedMessage(node_id, raw_msg)) = conn_event {
+        println!("- message received: {node_id}, {raw_msg}");
         let action = action::CommAction::from_namespaced_msg(&node_id, &raw_msg);
         actions_queue.lock().await.push(action);
     }
@@ -178,5 +179,8 @@ async fn run_queue_check(
         action = actions_queue.lock().await.pop();
     }
 
-    perform_action(conn, sync_process, actions_queue, action).await
+    let res = perform_action(conn, sync_process, actions_queue, action).await;
+    println!("- action handled");
+
+    res
 }
