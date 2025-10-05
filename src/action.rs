@@ -193,17 +193,17 @@ pub async fn perform_action(
     conn: &Arc<Mutex<Connection>>,
     sync_process: &SyncProcess,
     actions_queue: &Arc<Mutex<queue::Queue<CommAction>>>,
-    action: Option<CommAction>,
+    action: CommAction,
 ) -> Result<()> {
     match action {
         // we have a new message to send through the connection
-        Some(CommAction::SendMessage(to_node_id, msg)) => {
+        CommAction::SendMessage(to_node_id, msg) => {
             println!("action: SendMessage: {to_node_id}, {msg}");
             return on_send_message(conn, to_node_id, msg).await;
         }
 
         // received a target changed, lets then request the target if that is the case
-        Some(CommAction::TargetHasChanged(to_node_id, target_name)) => {
+        CommAction::TargetHasChanged(to_node_id, target_name) => {
             println!("action: TargetHasChanged: {to_node_id}, {target_name}");
             return on_target_has_changed(sync_process, actions_queue, to_node_id, target_name)
                 .await;
@@ -211,31 +211,31 @@ pub async fn perform_action(
 
         // a request has been done by the puller, as such we prepare the ticket id
         // and send the message to the puller
-        Some(CommAction::RequestTarget(from_node_id, target_name)) => {
+        CommAction::RequestTarget(from_node_id, target_name) => {
             println!("action: RequestTarget: {from_node_id}, {target_name}");
             return on_request_target(from_node_id, target_name).await;
         }
 
         // pusher has prepared a ticket id for us to download if we want
-        Some(CommAction::DownloadTarget(from_node_id, ticket_id)) => {
+        CommAction::DownloadTarget(from_node_id, ticket_id) => {
             println!("action: DownloadTarget: {from_node_id}, {ticket_id}");
             return on_download_target(from_node_id, ticket_id).await;
         }
 
         // puller has download the ticket, we can safely remove it
-        Some(CommAction::DownloadDone(from_node_id, ticket_id)) => {
+        CommAction::DownloadDone(from_node_id, ticket_id) => {
             println!("action: DownloadDone: {from_node_id}, {ticket_id}");
             return on_download_done(from_node_id, ticket_id).await;
         }
 
         // puller requested the timestamp status of a target from a pusher
-        Some(CommAction::RequestTargetTimestamp(from_node_id, target_name)) => {
+        CommAction::RequestTargetTimestamp(from_node_id, target_name) => {
             println!("action: RequestTargetTimestamp: {from_node_id}, {target_name}");
             return on_request_target_timestamp(from_node_id, target_name).await;
         }
 
         // pusher informs the timestamp status of a target to a puller
-        Some(CommAction::TargetTimestamp(from_node_id, target_name, timestamp)) => {
+        CommAction::TargetTimestamp(from_node_id, target_name, timestamp) => {
             println!("action: TargetTimestamp: {from_node_id}, {target_name}, {timestamp}");
             return on_target_timestamp(from_node_id, target_name, timestamp).await;
         }
