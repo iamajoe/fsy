@@ -1,7 +1,6 @@
-use crate::config::{FileSync, FileSyncTarget, TargetMode};
+use crate::target::{Target, TargetGroup, TargetMode};
 use anyhow::Result;
 
-use chrono::{DateTime, Utc};
 use notify::RecommendedWatcher;
 use notify_debouncer_mini::{DebounceEventResult, DebouncedEventKind, Debouncer, new_debouncer};
 
@@ -12,14 +11,14 @@ use std::{
     sync::mpsc::{self, Receiver},
 };
 
-pub struct SyncWatcher {
+pub struct TargetWatcher {
     file_watcher: Debouncer<RecommendedWatcher>,
     file_watcher_rx: Receiver<Option<PathBuf>>,
     process: SyncProcess,
     watch_paths: Vec<String>,
 }
 
-impl SyncWatcher {
+impl TargetWatcher {
     pub fn new(process: SyncProcess, push_debounce_millisecs: u64) -> Result<Self> {
         let (watcher_tx, watcher_rx) = mpsc::channel();
 
@@ -56,10 +55,10 @@ impl SyncWatcher {
         self.set_watcher_files()
     }
 
-    pub fn get_changed_files(&self) -> Option<Vec<FileSync>> {
+    pub fn get_changed_targets(&self) -> Option<Vec<TargetGroup>> {
         let changed_path = self.file_watcher_rx.try_recv();
         if let Ok(Some(changed_path)) = changed_path {
-            let targets = self.process.get_push_syncs_by_path(changed_path.to_str()?);
+            let targets = self.process.get_push_targets_by_path(changed_path.to_str()?);
             return Some(targets);
         }
 
@@ -97,19 +96,19 @@ impl SyncWatcher {
 
 #[derive(Clone)]
 pub struct SyncProcess {
-    syncs: Vec<FileSync>,
+    target_groups: Vec<TargetGroup>,
 }
 
 impl SyncProcess {
-    pub fn new(syncs: Vec<FileSync>) -> Self {
-        Self { syncs }
+    pub fn new(target_groups: Vec<TargetGroup>) -> Self {
+        Self { target_groups }
     }
 
     pub fn get_paths_to_watch(&self) -> Vec<String> {
         // find which paths we should be watching
         let mut watch_paths: Vec<String> = vec![];
-        for sync in self.syncs.iter() {
-            let is_push = sync
+        for target in self.target_groups.iter() {
+            let is_push = target  
                 .targets
                 .iter()
                 .any(|t| t.mode == TargetMode::Push || t.mode == TargetMode::PushPull);
@@ -117,43 +116,41 @@ impl SyncProcess {
                 continue;
             }
 
-            let sync_path = sync.path.clone();
-            watch_paths.push(sync_path);
+            watch_paths.push(target.path.clone());
         }
 
         watch_paths
     }
 
-    pub fn get_push_syncs_by_path(&self, file_path: &str) -> Vec<FileSync> {
-        get_syncs_by_path(
-            &self.syncs,
+    pub fn get_push_targets_by_path(&self, file_path: &str) -> Vec<TargetGroup> {
+        get_targets_by_path(
+            &self.target_groups,
             file_path,
             vec![TargetMode::Push, TargetMode::PushPull],
         )
     }
 
-    pub fn get_pull_syncs_by_name(
+    pub fn get_pull_targets_by_name(
         &self,
         target_name: &str,
-        _timestamp: DateTime<Utc>,
-    ) -> Vec<FileSync> {
+    ) -> Vec<TargetGroup> {
         // TODO: what about timestamp?
         //       we should be careful so we don't download something
         //       that has just been downloaded for example
-        get_syncs_by_name(
-            &self.syncs,
+        get_targets_by_name(
+            &self.target_groups,
             target_name,
             vec![TargetMode::Pull, TargetMode::PushPull],
         )
     }
 }
 
-fn get_syncs_by_path(
-    syncs: &[FileSync],
+fn get_targets_by_path(
+    target_groups: &[TargetGroup],
     file_path: &str,
     target_modes: Vec<TargetMode>,
-) -> Vec<FileSync> {
-    let syncs: Vec<FileSync> = syncs.iter().filter_map(|sync| {
+) -> Vec<TargetGroup> {
+    let target_groups: Vec<TargetGroup> = target_groups.iter().filter_map(|sync| {
         if sync.path != file_path {
             return None;
         }
@@ -161,32 +158,32 @@ fn get_syncs_by_path(
         Some(sync.clone())
     }).collect();
 
-    get_syncs_by_target(&syncs, target_modes)
+    get_targets_by_mode(&target_groups, target_modes)
 }
 
-fn get_syncs_by_name(
-    syncs: &[FileSync],
+fn get_targets_by_name(
+    target_groups: &[TargetGroup],
     target_name: &str,
     target_modes: Vec<TargetMode>,
-) -> Vec<FileSync> {
-    let syncs: Vec<FileSync> = syncs.iter().filter_map(|sync| {
-        if sync.name != target_name {
+) -> Vec<TargetGroup> {
+    let target_groups: Vec<TargetGroup> = target_groups.iter().filter_map(|target| {
+        if target.name != target_name {
             return None;
         }
 
-        Some(sync.clone())
+        Some(target.clone())
     }).collect();
 
-    get_syncs_by_target(&syncs, target_modes)
+    get_targets_by_mode(&target_groups, target_modes)
 }
 
-fn get_syncs_by_target(syncs: &[FileSync], target_modes: Vec<TargetMode>) -> Vec<FileSync> {
-    let mut file_targets: Vec<FileSync> = vec![];
+fn get_targets_by_mode(target_groups: &[TargetGroup], target_modes: Vec<TargetMode>) -> Vec<TargetGroup> {
+    let mut file_targets: Vec<TargetGroup> = vec![];
 
     // iterate each sync to find all the targets we need
-    for sync in syncs {
+    for target in target_groups {
         // gather pushing targets
-        let targets: Vec<FileSyncTarget> = sync
+        let targets: Vec<Target> =target  
             .targets
             .iter()
             .filter_map(|t| {
@@ -202,9 +199,9 @@ fn get_syncs_by_target(syncs: &[FileSync], target_modes: Vec<TargetMode>) -> Vec
         }
 
         // push the file target file
-        file_targets.push(FileSync {
-            name: sync.name.clone(),
-            path: sync.path.clone(),
+        file_targets.push(TargetGroup {
+            name: target.name.clone(),
+            path: target.path.clone(),
             targets,
         });
     }

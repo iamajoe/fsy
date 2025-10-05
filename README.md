@@ -23,23 +23,22 @@ After you run the first time, a config will be created under `$HOME/.config/fsy/
 
 ```toml
 # trustees is the list of nodes you want to interact with
-[[trustees]]
+[[nodes]]
 name = "desktop" # friendly name id of the environment
-node_id = "<env node id>"
+id = "<env node id>"
 
-[[file_syncs]]
+[[target_groups]]
 name = "amazing_file" # friendly name for the sync to be done, needs to be common to the configs
 path = "/Users/joe/amazing_file.txt" # file to sync
 
 # targets is where and how this sync should be done
-[[file_syncs.targets]]
+[[target_groups.targets]]
 # there are 3 modes push / pull / pushpull
 # - push: only pushes the changes to envs
 # - pull: only pulls changes from envs
 # - pushpull: bilateral communication of changes
 mode = "push"
-trustee_name = "desktop" # trustee friendly name id
-key = "1" # key used to encrypt
+node_name = "desktop" # trustee friendly name id
 
 [local]
 # set of keys to build up your local node id

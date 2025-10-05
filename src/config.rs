@@ -1,4 +1,7 @@
-use crate::key;
+use crate::{
+    key,
+    target::{NodeData, TargetGroup},
+};
 use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
 use std::{env, ffi::OsString, fs, path::Path};
@@ -14,42 +17,12 @@ pub struct LocalNodeData {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct NodeData {
-    pub name: String, // unique identifier of this node for the user
-    pub node_id: String,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
-pub enum TargetMode {
-    #[serde(rename = "push")]
-    Push,
-    #[serde(rename = "push-pull")]
-    PushPull,
-    #[serde(rename = "pull")]
-    Pull,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct FileSyncTarget {
-    pub mode: TargetMode,     // is it only push? only pull? both?
-    pub trustee_name: String, // trustee name, the descritive
-    pub key: String,          // used to check if the user has access to target
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct FileSync {
-    pub name: String, // name identifier to be passed as unique communicator between nodes
-    pub path: String, // path for the file / folder
-    pub targets: Vec<FileSyncTarget>, // targets to whom push / pull
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Config {
     #[serde(skip)]
     pub config_path: OsString,
     pub local: LocalNodeData,
-    pub trustees: Vec<NodeData>,
-    pub file_syncs: Vec<FileSync>,
+    pub nodes: Vec<NodeData>,
+    pub target_groups: Vec<TargetGroup>,
 }
 
 impl Default for Config {
@@ -64,8 +37,8 @@ impl Default for Config {
                 push_debounce_millisecs: 500,
                 loop_debounce_millisecs: 250,
             },
-            trustees: vec![],
-            file_syncs: vec![],
+            nodes: vec![],
+            target_groups: vec![],
         }
     }
 }

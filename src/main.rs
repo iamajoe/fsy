@@ -1,9 +1,10 @@
-mod actions;
+mod action;
 mod config;
 mod connection;
 mod key;
 mod queue;
-mod sync_watcher;
+mod target;
+mod target_watcher;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -12,9 +13,9 @@ use anyhow::Result;
 use tokio::sync::{Mutex, watch::channel};
 use tokio::time::sleep;
 
-use self::actions::CommAction;
+use self::action::{CommAction, perform_action};
 use self::connection::Connection;
-use self::sync_watcher::{SyncProcess, SyncWatcher};
+use self::target_watcher::{SyncProcess, TargetWatcher};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -32,27 +33,26 @@ async fn main() -> Result<()> {
 
     // setup the process
     println!("initializing sync process");
-    let sync_process = SyncProcess::new(config.file_syncs.clone());
+    let sync_process = SyncProcess::new(config.target_groups.clone());
 
     // setup the queues
-    let raw_queue: queue::Queue<CommAction> = queue::Queue::new(queue::MAX_CAPACITY);
-    let conn_queue: Arc<Mutex<queue::Queue<CommAction>>> = Arc::new(Mutex::new(raw_queue.clone()));
-    let sync_queue: Arc<Mutex<queue::Queue<CommAction>>> = Arc::new(Mutex::new(raw_queue));
+    let actions_queue: queue::Queue<CommAction> = queue::Queue::new(queue::MAX_CAPACITY);
+    let actions_queue: Arc<Mutex<queue::Queue<CommAction>>> =
+        Arc::new(Mutex::new(actions_queue.clone()));
 
     // NOTE: controller if the app is running or not
     let (is_running_tx, is_running_rx) = channel(true);
 
     // loop receivers of events into queues
     let event_is_running_rx = is_running_rx.clone();
+    let event_queue = actions_queue.clone();
     let event_conn = conn.clone();
-    let event_conn_queue = conn_queue.clone();
     let event_sync_process = sync_process.clone();
-    let event_sync_queue = sync_queue.clone();
     tokio::spawn(async move {
         println!("starting watcher sync");
-        let mut sync_watcher =
-            SyncWatcher::new(event_sync_process, config.local.push_debounce_millisecs).unwrap();
-        sync_watcher.start().unwrap();
+        let mut target_watcher =
+            TargetWatcher::new(event_sync_process, config.local.push_debounce_millisecs).unwrap();
+        target_watcher.start().unwrap();
 
         println!("looping event checker");
         loop {
@@ -60,25 +60,19 @@ async fn main() -> Result<()> {
                 break;
             }
 
-            sync_watcher = run_event_check(
-                &event_conn,
-                sync_watcher,
-                &event_conn_queue,
-                &event_sync_queue,
-            )
-            .await
-            .unwrap();
+            target_watcher = run_event_check(&event_conn, target_watcher, &event_queue)
+                .await
+                .unwrap();
             sleep(Duration::from_millis(config.local.loop_debounce_millisecs)).await;
         }
 
-        sync_watcher.close().unwrap();
+        target_watcher.close().unwrap();
     });
 
     // handle the queues
     let queue_is_running_rx = is_running_rx.clone();
-    let queue_conn_queue = conn_queue.clone();
+    let queue_queue = actions_queue.clone();
     let queue_conn = conn.clone();
-    let queue_sync_queue = sync_queue.clone();
     tokio::spawn(async move {
         println!("looping queues");
         loop {
@@ -86,14 +80,11 @@ async fn main() -> Result<()> {
                 break;
             }
 
-            run_queue_check(
-                &queue_conn,
-                &sync_process,
-                &queue_conn_queue,
-                &queue_sync_queue,
-            )
-            .await
-            .unwrap();
+            if let Err(e) = run_queue_check(&queue_conn, &sync_process, &queue_queue).await {
+                // NOTE: we don't want to mess the process if an error comes in, keep doing it
+                println!("- error: {e}");
+            }
+
             sleep(Duration::from_millis(config.local.loop_debounce_millisecs)).await;
         }
     });
@@ -118,39 +109,58 @@ async fn main() -> Result<()> {
 // or the sync process. For example:
 // - a received message through the connection
 //   - it parses then the message to be of the type of action
-// - files changed on the syncing process
+// - targets have changed on the syncing process
 //   - it creates then actions to send through the connection
 async fn run_event_check(
     conn: &Arc<Mutex<Connection>>,
-    sync: SyncWatcher,
-    conn_queue: &Arc<Mutex<queue::Queue<CommAction>>>,
-    sync_queue: &Arc<Mutex<queue::Queue<CommAction>>>,
-) -> Result<SyncWatcher> {
+    target_watcher: TargetWatcher,
+    actions_queue: &Arc<Mutex<queue::Queue<CommAction>>>,
+) -> Result<TargetWatcher> {
     // check for events on the connection
     let conn_event: Option<connection::ConnEvent>;
     {
         // NOTE: setup scope because of the lock
         conn_event = conn.lock().await.get_events().unwrap();
     }
+
+    // check for events on the connection
     if let Some(connection::ConnEvent::ReceivedMessage(node_id, raw_msg)) = conn_event {
-        let action = actions::parse_msg_to_action(node_id, raw_msg);
-        if let Some(action) = action {
-            sync_queue.lock().await.push(action);
-        }
+        let action = action::CommAction::from_namespaced_msg(&node_id, &raw_msg);
+        actions_queue.lock().await.push(action);
     }
 
-    // check for events on the watcher
-    if let Some(files) = sync.get_changed_files()
-        && !files.is_empty()
-    {
+    // check if watcher has changed targets events
+    if let Some(targets) = target_watcher.get_changed_targets() {
         let config = config::Config::new("").unwrap();
-        let msgs = actions::get_changed_files_actions(files, config.trustees);
-        if !msgs.is_empty() {
-            conn_queue.lock().await.push_multiple(msgs);
+        let target_names: Vec<String> = targets.iter().map(|t| t.name.clone()).collect();
+        let node_ids: Vec<String> = targets
+            .iter()
+            .flat_map(|target| {
+                target.get_node_ids(
+                    &config.nodes,
+                    &[target::TargetMode::Push, target::TargetMode::PushPull],
+                )
+            })
+            .collect();
+
+        let target_changed_actions: Vec<CommAction> = target_names
+            .iter()
+            .flat_map(|target_name| {
+                node_ids.iter().map(|node_id| {
+                    CommAction::TargetHasChanged(node_id.to_owned(), target_name.clone())
+                        .to_send_message()
+                })
+            })
+            .collect();
+        if !target_changed_actions.is_empty() {
+            actions_queue
+                .lock()
+                .await
+                .push_multiple(target_changed_actions);
         }
     }
 
-    Ok(sync)
+    Ok(target_watcher)
 }
 
 // run_queue_check runs all the queue items we have be it for
@@ -159,65 +169,14 @@ async fn run_event_check(
 // - if on the sync, it consumes an action and performs
 async fn run_queue_check(
     conn: &Arc<Mutex<Connection>>,
-    sync: &SyncProcess,
-    conn_queue: &Arc<Mutex<queue::Queue<CommAction>>>,
-    sync_queue: &Arc<Mutex<queue::Queue<CommAction>>>,
+    sync_process: &SyncProcess,
+    actions_queue: &Arc<Mutex<queue::Queue<CommAction>>>,
 ) -> Result<()> {
-    let conn_action: Option<CommAction>;
-    let sync_action: Option<CommAction>;
+    let action: Option<CommAction>;
     {
         // NOTE: setup scope because of the lock, we need to remove the lock asap
-        conn_action = conn_queue.lock().await.pop();
-        sync_action = sync_queue.lock().await.pop();
+        action = actions_queue.lock().await.pop();
     }
 
-    // handle actions incoming to the connection
-    match conn_action {
-        Some(CommAction::SendMessage(node_id, msg)) => {
-            println!("conn_queue: sending message");
-            println!("- \"{msg}\" to node: \"{node_id}\"");
-            if let Err(e) = conn.lock().await.send_msg_to_node(node_id, msg).await {
-                println!("- error: {e}");
-            }
-        }
-        // a request has been done by the puller, as such we prepare the ticket id
-        // and send the message to the puller
-        Some(CommAction::RequestFile(node_id, target_name)) => {
-            let ticket_id = "".to_string();
-            // TODO: handle the request file
-            println!("conn_queue: requesting file");
-            println!("- \"{target_name}\" to node: \"{node_id}\"");
-
-            let actions = actions::get_download_files_actions(ticket_id, vec![node_id]);
-            // TODO: do we have this target?!
-            // TODO: check if msg is needed and if we want to download, if we want, request the ticket
-        }
-        _ => {}
-    }
-
-    // handle actions incoming to the sync
-    // received a target changed, lets then request the file if that is the case
-    if let Some(CommAction::FileHasChanged(node_id, target_name, timestamp)) = sync_action {
-        // first retrieve all the target syncs where we have a pull, no point for the push
-        let syncs = sync.get_pull_syncs_by_name(&target_name, timestamp);
-        if !syncs.is_empty() {
-            let config = config::Config::new("").unwrap();
-            // get all the request target actions to request to the pusher
-            let actions = actions::get_request_files_actions(syncs, config.trustees);
-            if !actions.is_empty() {
-                // TODO: is this listening to this file? if it is request a download
-                println!("sync_queue: file_has_changed");
-                println!("- \"{target_name}\", at \"{timestamp}\", from node: \"{node_id}\"");
-                // cache the actions so that the event looper can send the requests
-                // through the wire
-                conn_queue.lock().await.push_multiple(actions);
-            }
-        }
-    }
-
-    // TODO: check if key is fine
-    // TODO: if the msg is a download message, provide the blob id
-    // TODO: if the msg is a blob id, download
-
-    Ok(())
+    perform_action(conn, sync_process, actions_queue, action).await
 }
