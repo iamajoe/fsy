@@ -9,6 +9,7 @@ use crate::connection::Connection;
 use crate::queue;
 use crate::target_watcher::SyncProcess;
 
+#[derive(Debug, PartialEq)]
 enum ActionNamespace {
     Unknown,
     SendMessage,
@@ -39,21 +40,19 @@ impl ActionNamespace {
 
 impl From<String> for ActionNamespace {
     fn from(value: String) -> Self {
-        let value = value.as_bytes().to_owned();
-        if value.is_empty() {
-            return ActionNamespace::Unknown;
-        }
-        let value = value[0];
-
+        let value = value.parse::<u8>();
         match value {
-            1 => ActionNamespace::SendMessage,
-            2 => ActionNamespace::TargetHasChanged,
-            3 => ActionNamespace::RequestTarget,
-            4 => ActionNamespace::DownloadTarget,
-            5 => ActionNamespace::DownloadDone,
-            6 => ActionNamespace::RequestTargetTimestamp,
-            7 => ActionNamespace::TargetTimestamp,
-            _ => ActionNamespace::Unknown,
+            Ok(value) => match value {
+                1 => ActionNamespace::SendMessage,
+                2 => ActionNamespace::TargetHasChanged,
+                3 => ActionNamespace::RequestTarget,
+                4 => ActionNamespace::DownloadTarget,
+                5 => ActionNamespace::DownloadDone,
+                6 => ActionNamespace::RequestTargetTimestamp,
+                7 => ActionNamespace::TargetTimestamp,
+                _ => ActionNamespace::Unknown,
+            },
+            Err(_e) => ActionNamespace::Unknown,
         }
     }
 }
@@ -78,7 +77,7 @@ fn template_msg_with_ns(namespace: ActionNamespace, raw_msg: &str) -> String {
     format!("{namespace}]]::{raw_msg}")
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum CommAction {
     Unknown,
 
@@ -174,7 +173,8 @@ impl CommAction {
                 Self::SendMessage(from_node_id.to_owned(), msg)
             }
             Self::RequestTargetTimestamp(from_node_id, target_name) => {
-                let msg = template_msg_with_ns(ActionNamespace::RequestTargetTimestamp, target_name);
+                let msg =
+                    template_msg_with_ns(ActionNamespace::RequestTargetTimestamp, target_name);
                 Self::SendMessage(from_node_id.to_owned(), msg)
             }
             Self::TargetTimestamp(from_node_id, target_name, timestamp) => {
@@ -302,10 +302,7 @@ async fn on_download_done(_from_node_id: String, _ticket_id: String) -> Result<(
     Ok(())
 }
 
-async fn on_request_target_timestamp(
-    _from_node_id: String,
-    _target_name: String,
-) -> Result<()> {
+async fn on_request_target_timestamp(_from_node_id: String, _target_name: String) -> Result<()> {
     // TODO: check the target current timestamp and see if we should sync
     Ok(())
 }
@@ -317,4 +314,128 @@ async fn on_target_timestamp(
 ) -> Result<()> {
     // TODO: check the target current timestamp and see if we should sync
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use anyhow::Result;
+
+    #[test]
+    fn test_action_ns_to_u8() -> Result<()> {
+        let test_values = [
+            (ActionNamespace::Unknown, 0),
+            (ActionNamespace::SendMessage, 1),
+            (ActionNamespace::TargetHasChanged, 2),
+            (ActionNamespace::RequestTarget, 3),
+            (ActionNamespace::DownloadTarget, 4),
+            (ActionNamespace::DownloadDone, 5),
+            (ActionNamespace::RequestTargetTimestamp, 6),
+            (ActionNamespace::TargetTimestamp, 7),
+        ];
+
+        for spec in test_values {
+            let action_u8 = spec.0.to_u8();
+            assert_eq!(action_u8, spec.1);
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_action_ns_from() -> Result<()> {
+        let test_values = [
+            ("a".to_string(), ActionNamespace::Unknown),
+            ("abc".to_string(), ActionNamespace::Unknown),
+            ("-1".to_string(), ActionNamespace::Unknown),
+            ("_1".to_string(), ActionNamespace::Unknown),
+            ("1234".to_string(), ActionNamespace::Unknown),
+            ("1".to_string(), ActionNamespace::SendMessage),
+            ("2".to_string(), ActionNamespace::TargetHasChanged),
+            ("3".to_string(), ActionNamespace::RequestTarget),
+            ("4".to_string(), ActionNamespace::DownloadTarget),
+            ("5".to_string(), ActionNamespace::DownloadDone),
+            ("6".to_string(), ActionNamespace::RequestTargetTimestamp),
+            ("7".to_string(), ActionNamespace::TargetTimestamp),
+        ];
+
+        for spec in test_values {
+            let action = ActionNamespace::from(spec.0);
+            assert_eq!(action, spec.1);
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_action_get_ns_split() -> Result<()> {
+        let test_values = [
+            ("a", ActionNamespace::Unknown, ""),
+            ("0]]::foo", ActionNamespace::Unknown, "foo"),
+            ("1]]::foo", ActionNamespace::SendMessage, "foo"),
+            ("2]]::bar", ActionNamespace::TargetHasChanged, "bar"),
+            ("3]]::zed", ActionNamespace::RequestTarget, "zed"),
+            ("4]]::zinga", ActionNamespace::DownloadTarget, "zinga"),
+            ("5]]::foo bar", ActionNamespace::DownloadDone, "foo bar"),
+            (
+                "6]]::zed zinga",
+                ActionNamespace::RequestTargetTimestamp,
+                "zed zinga",
+            ),
+            ("7]]::", ActionNamespace::TargetTimestamp, ""),
+        ];
+
+        for spec in test_values {
+            let (action, raw) = get_ns_split(spec.0);
+            assert_eq!(action, spec.1);
+            assert_eq!(raw, spec.2);
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_action_template_msg_with_ns() -> Result<()> {
+        let test_values = [
+            (ActionNamespace::Unknown, "", "0]]::"),
+            (ActionNamespace::Unknown, "foo", "0]]::foo"),
+            (ActionNamespace::SendMessage, "foo", "1]]::foo"),
+            (ActionNamespace::TargetHasChanged, "bar", "2]]::bar"),
+            (ActionNamespace::RequestTarget, "zed", "3]]::zed"),
+            (ActionNamespace::DownloadTarget, "zinga", "4]]::zinga"),
+            (ActionNamespace::DownloadDone, "foo bar", "5]]::foo bar"),
+            (
+                ActionNamespace::RequestTargetTimestamp,
+                "zed zinga",
+                "6]]::zed zinga",
+            ),
+            (ActionNamespace::TargetTimestamp, "", "7]]::"),
+        ];
+
+        for spec in test_values {
+            let result = template_msg_with_ns(spec.0, spec.1);
+            assert_eq!(result, spec.2);
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_action_from_namespaced_msg() -> Result<()> {
+        let test_values = [
+            // (node_id, raw_msg, CommAction)
+            (
+                "1234",
+                "2]]::tmp_send",
+                CommAction::TargetHasChanged("1234".to_string(), "tmp_send".to_string()),
+            ),
+        ];
+
+        for spec in test_values {
+            let action = CommAction::from_namespaced_msg(spec.0, spec.1);
+            assert_eq!(action, spec.2);
+        }
+
+        Ok(())
+    }
 }
