@@ -1,15 +1,10 @@
 use anyhow::Result;
-use bao_tree::io::BaoContentItem;
-use bytes::Bytes;
-use n0_future::StreamExt;
 use iroh::{
     Endpoint, NodeAddr, NodeId, SecretKey, Watcher,
     protocol::{self, AcceptError, ProtocolHandler},
 };
-use iroh_blobs::{get::request::GetBlobItem, store::mem::MemStore, ticket::BlobTicket, BlobsProtocol};
-use std::{
-    fs::write, path::{Path, PathBuf}, str::FromStr
-};
+use iroh_blobs::{store::mem::MemStore, ticket::BlobTicket, BlobsProtocol};
+use std::{ path::{Path, PathBuf}, str::FromStr };
 use tokio::sync::watch;
 
 const MESSAGE_PROTOCOL_ALPN: &[u8] = b"iroh/ping/0";
@@ -24,7 +19,6 @@ pub enum ConnEvent {
 pub struct Connection {
     router: protocol::Router,
     message_watcher_rx: watch::Receiver<Option<ConnEvent>>,
-    blobs: BlobsProtocol,
     store: MemStore,
 }
 
@@ -67,7 +61,6 @@ impl Connection {
         Ok(Self {
             router,
             message_watcher_rx,
-            blobs,
             store,
         })
     }
@@ -124,46 +117,50 @@ impl Connection {
         Ok(ticket)
     }
 
-    pub async fn download_ticket(&self, ticket_id: String, file_path: String) -> Result<()> {
+    pub async fn download_ticket_to_path(&self, ticket_id: String, file_path: String) -> Result<()> {
         let filename: PathBuf = file_path.parse()?;
         let abs_path = std::path::absolute(filename)?;
         let ticket: BlobTicket = ticket_id.parse()?;
 
-        // let downloader = self.store.downloader(self.router.endpoint());
-        // downloader.download(ticket.hash(), Some(ticket.node_addr().node_id)).await?;
+        let downloader = self.store.downloader(self.router.endpoint());
+        downloader.download(ticket.hash(), Some(ticket.node_addr().node_id)).await?;
         // TODO: should return bytes instead
-        // self.store.blobs().export(ticket.hash(), abs_path).await?;
+        self.store.blobs().export(ticket.hash(), abs_path).await?;
 
-        let connection = self
-            .router
-            .endpoint()
-            .connect(ticket.node_addr().node_id, iroh_blobs::ALPN)
-            .await?;
-        let mut progress = iroh_blobs::get::request::get_blob(connection, ticket.hash());
-        let stats = loop {
-            match progress.next().await {
-                Some(GetBlobItem::Item(item)) => match item {
-                    BaoContentItem::Leaf(leaf) => {
-                        // tokio::io::stdout().write_all(&leaf.data).await?;
-                        write(&abs_path, leaf.data).unwrap();
-                        println!("Wrote to file leaf: {} {}", leaf.offset, abs_path.to_str().unwrap());
-                    }
-                    BaoContentItem::Parent(parent) => {
-                        println!("Parent: {parent:?}");
-                    }
-                },
-                Some(GetBlobItem::Done(stats)) => {
-                    println!("Stats: {} {} {}", stats.mbits(), stats.payload_bytes_read, stats.total_bytes_read());
-                    break stats;
-                }
-                Some(GetBlobItem::Error(err)) => {
-                    anyhow::bail!("Error while streaming blob: {err}");
-                }
-                None => {
-                    anyhow::bail!("Stream ended unexpectedly.");
-                }
-            }
-        };
+        // let connection = self
+        //     .router
+        //     .endpoint()
+        //     .connect(ticket.node_addr().node_id, iroh_blobs::ALPN)
+        //     .await?;
+        // let mut progress = iroh_blobs::get::request::get_blob(connection, ticket.hash());
+        // let _ = loop {
+        //     match progress.next().await {
+        //         Some(GetBlobItem::Item(item)) => match item {
+        //             BaoContentItem::Leaf(leaf) => {
+        //                 // TODO: we are not moving this yet because the file might be too big
+        //                 //       and we don't want to move it on memory in that case, we 
+        //                 //       want to stream it in
+        //                 //       in that case, this write, might not work at all and maybe
+        //                 //       we want to get back to the download but then, how do we handle
+        //                 //       the progress?!
+        //                 write(&abs_path, leaf.data).unwrap();
+        //             }
+        //             BaoContentItem::Parent(parent) => {
+        //                 println!("Parent: {parent:?}");
+        //             }
+        //         },
+        //         Some(GetBlobItem::Done(stats)) => {
+        //             println!("Stats: {} {} {}", stats.mbits(), stats.payload_bytes_read, stats.total_bytes_read());
+        //             break stats;
+        //         }
+        //         Some(GetBlobItem::Error(err)) => {
+        //             anyhow::bail!("Error while streaming blob: {err}");
+        //         }
+        //         None => {
+        //             anyhow::bail!("Stream ended unexpectedly.");
+        //         }
+        //     }
+        // };
 
         // TODO: what about progress?!
 

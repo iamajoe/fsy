@@ -338,7 +338,7 @@ async fn on_download_target(
         // TODO: should check node id
         conn.lock()
             .await
-            .download_ticket(ticket_id.clone(), target.path.clone())
+            .download_ticket_to_path(ticket_id.clone(), target.path.clone())
             .await?;
             
     }
