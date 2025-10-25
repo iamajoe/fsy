@@ -125,6 +125,8 @@ impl Connection {
     pub async fn download_ticket(&self, ticket_id: String, file_path: String) -> Result<()> {
         let filename: PathBuf = file_path.parse()?;
         let abs_path = std::path::absolute(filename)?;
+        println!("ABS PATH {}", abs_path.to_str().unwrap());
+
         let ticket: BlobTicket = ticket_id.parse()?;
 
         let downloader = self.store.downloader(self.router.endpoint());

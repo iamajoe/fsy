@@ -222,7 +222,7 @@ pub async fn perform_action(
         // and send the message to the puller
         CommAction::RequestTarget(from_node_id, target_name) => {
             println!("[action][RequestTarget] {from_node_id}, {target_name}");
-            return on_request_target(conn, actions_queue, from_node_id, target_name).await;
+            return on_request_target(conn, sync_process, actions_queue, from_node_id, target_name).await;
         }
 
         // pusher has prepared a ticket id for us to download if we want
@@ -291,17 +291,25 @@ async fn on_target_has_changed(
 
 async fn on_request_target(
     conn: &Arc<Mutex<Connection>>,
+    sync_process: &SyncProcess,
     actions_queue: &Arc<Mutex<queue::Queue<CommAction>>>,
     from_node_id: String,
     target_name: String,
 ) -> Result<()> {
-    let ticket_id = conn.lock().await.get_file_ticket("".to_owned()).await?;
+    // TODO: what about directories and recursion?!
 
-    // get all the request target actions to request to the pusher
-    let send_actions: Vec<CommAction> = vec![
-        CommAction::DownloadTarget(from_node_id.clone(), target_name, ticket_id.to_string())
-            .to_send_message(),
-    ];
+    let mut send_actions: Vec<CommAction> = vec![];
+    let targets = sync_process.get_push_targets_by_name(&target_name);
+
+    // TODO: why do i need extra targets?!
+    for target in targets {
+        let ticket_id = conn.lock().await.get_file_ticket(target.path).await?;
+        let action =
+            CommAction::DownloadTarget(from_node_id.clone(), target_name.clone(), ticket_id.to_string())
+                .to_send_message();
+
+        send_actions.push(action);
+    }
 
     // cache the actions so that the event looper can send the requests
     actions_queue.lock().await.push_multiple(send_actions);
