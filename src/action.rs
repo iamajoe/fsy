@@ -207,13 +207,13 @@ pub async fn perform_action(
     match action {
         // we have a new message to send through the connection
         CommAction::SendMessage(to_node_id, msg) => {
-            println!("[action][SendMessage] {to_node_id}");
+            println!("  [SendMessage] {to_node_id}");
             return on_send_message(conn, to_node_id, msg).await;
         }
 
         // received a target changed, lets then request the target if that is the case
         CommAction::TargetHasChanged(to_node_id, target_name) => {
-            println!("[action][TargetHasChanged] {to_node_id}, {target_name}");
+            println!("  [TargetHasChanged] {to_node_id}, {target_name}");
             return on_target_has_changed(sync_process, actions_queue, to_node_id, target_name)
                 .await;
         }
@@ -221,31 +221,32 @@ pub async fn perform_action(
         // a request has been done by the puller, as such we prepare the ticket id
         // and send the message to the puller
         CommAction::RequestTarget(from_node_id, target_name) => {
-            println!("[action][RequestTarget] {from_node_id}, {target_name}");
-            return on_request_target(conn, sync_process, actions_queue, from_node_id, target_name).await;
+            println!("  [RequestTarget] {from_node_id}, {target_name}");
+            return on_request_target(conn, sync_process, actions_queue, from_node_id, target_name)
+                .await;
         }
 
         // pusher has prepared a ticket id for us to download if we want
         CommAction::DownloadTarget(from_node_id, target_name, ticket_id) => {
-            println!("[action][DownloadTarget] {from_node_id}, {target_name}");
-            return on_download_target(conn, from_node_id, target_name, ticket_id).await;
+            println!("  [DownloadTarget] {from_node_id}, {target_name}");
+            return on_download_target(conn, sync_process, from_node_id, target_name, ticket_id).await;
         }
 
         // puller has download the ticket, we can safely remove it
         CommAction::DownloadDone(from_node_id, ticket_id) => {
-            println!("[action][DownloadDone] {from_node_id}");
+            println!("  [DownloadDone] {from_node_id}");
             return on_download_done(from_node_id, ticket_id).await;
         }
 
         // puller requested the timestamp status of a target from a pusher
         CommAction::RequestTargetTimestamp(from_node_id, target_name) => {
-            println!("[action][RequestTargetTimestamp] {from_node_id}, {target_name}");
+            println!("  [RequestTargetTimestamp] {from_node_id}, {target_name}");
             return on_request_target_timestamp(from_node_id, target_name).await;
         }
 
         // pusher informs the timestamp status of a target to a puller
         CommAction::TargetTimestamp(from_node_id, target_name, timestamp) => {
-            println!("[action][TargetTimestamp] {from_node_id}, {target_name}, {timestamp}");
+            println!("  [TargetTimestamp] {from_node_id}, {target_name}, {timestamp}");
             return on_target_timestamp(from_node_id, target_name, timestamp).await;
         }
 
@@ -304,9 +305,12 @@ async fn on_request_target(
     // TODO: why do i need extra targets?!
     for target in targets {
         let ticket_id = conn.lock().await.get_file_ticket(target.path).await?;
-        let action =
-            CommAction::DownloadTarget(from_node_id.clone(), target_name.clone(), ticket_id.to_string())
-                .to_send_message();
+        let action = CommAction::DownloadTarget(
+            from_node_id.clone(),
+            target_name.clone(),
+            ticket_id.to_string(),
+        )
+        .to_send_message();
 
         send_actions.push(action);
     }
@@ -319,13 +323,25 @@ async fn on_request_target(
 
 async fn on_download_target(
     conn: &Arc<Mutex<Connection>>,
-    from_node_id: String,
+    sync_process: &SyncProcess,
+    _from_node_id: String,
     target_name: String,
     ticket_id: String,
 ) -> Result<()> {
-    println!("data on target {from_node_id} {target_name} {ticket_id}");
+    let targets = sync_process.get_pull_targets_by_name(&target_name);
 
-    conn.lock().await.download_ticket(ticket_id, "tmp_foo".to_owned()).await?;
+    // TODO: why do i need extra targets?!
+    for target in targets {
+        // TODO: should check node id
+        conn.lock()
+            .await
+            .download_ticket(ticket_id.clone(), target.path.clone())
+            .await?;
+            
+    }
+
+    // TODO: send a done. there might be multiple sends so... need to be careful about
+    //       removal
 
     Ok(())
 }
