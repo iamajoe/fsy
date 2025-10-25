@@ -8,8 +8,7 @@ use iroh::{
 };
 use iroh_blobs::{get::request::GetBlobItem, store::mem::MemStore, ticket::BlobTicket, BlobsProtocol};
 use std::{
-    path::{Path, PathBuf},
-    str::FromStr,
+    fs::write, path::{Path, PathBuf}, str::FromStr
 };
 use tokio::sync::watch;
 
@@ -146,7 +145,8 @@ impl Connection {
                 Some(GetBlobItem::Item(item)) => match item {
                     BaoContentItem::Leaf(leaf) => {
                         // tokio::io::stdout().write_all(&leaf.data).await?;
-                        println!("Leaf: {}", leaf.offset);
+                        write(&abs_path, leaf.data).unwrap();
+                        println!("Wrote to file leaf: {} {}", leaf.offset, abs_path.to_str().unwrap());
                     }
                     BaoContentItem::Parent(parent) => {
                         println!("Parent: {parent:?}");
