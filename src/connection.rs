@@ -1,9 +1,11 @@
 use anyhow::Result;
+use bytes::Bytes;
 use iroh::{
-    protocol::{self, AcceptError, ProtocolHandler}, Endpoint, NodeAddr, NodeId, SecretKey, Watcher
+    Endpoint, NodeAddr, NodeId, SecretKey, Watcher,
+    protocol::{self, AcceptError, ProtocolHandler},
 };
-use iroh_blobs::{store::mem::MemStore, ticket::BlobTicket, BlobsProtocol};
-use std::{path::Path, str::FromStr};
+use iroh_blobs::{BlobsProtocol, store::mem::MemStore, ticket::BlobTicket};
+use std::{path::{Path, PathBuf}, str::FromStr};
 use tokio::sync::watch;
 
 const MESSAGE_PROTOCOL_ALPN: &[u8] = b"iroh/ping/0";
@@ -11,7 +13,7 @@ const MESSAGE_PROTOCOL_ALPN: &[u8] = b"iroh/ping/0";
 #[derive(Debug, Clone)]
 pub enum ConnEvent {
     // node_id, raw_msg
-    ReceivedMessage(String, String)
+    ReceivedMessage(String, String),
 }
 
 #[derive(Clone)]
@@ -109,11 +111,65 @@ impl Connection {
     }
 
     pub async fn get_file_ticket(&self, file_path: String) -> Result<BlobTicket> {
-        // TODO: need to actually read the file bytes
-        let tag = self.store.add_slice(file_path.into_bytes()).await?;
+        let filename: PathBuf = file_path.parse()?;
+        let abs_path = std::path::absolute(&filename)?;
+        let tag = self.store.blobs().add_path(abs_path).await?;
+
+        // TODO: need to actually read the file bytes, use the previous tag
+        // let tag = self.store.add_slice(file_path.into_bytes()).await?;
         let addr = self.router.endpoint().node_addr().initialized().await;
         let ticket = BlobTicket::new(addr, tag.hash, tag.format);
         Ok(ticket)
+    }
+
+    pub async fn download_ticket(&self, ticket_id: String, file_path: String) -> Result<()> {
+        let filename: PathBuf = file_path.parse()?;
+        let abs_path = std::path::absolute(filename)?;
+        let ticket: BlobTicket = ticket_id.parse()?;
+
+        let downloader = self.store.downloader(self.router.endpoint());
+        downloader.download(ticket.hash(), Some(ticket.node_addr().node_id)).await?;
+
+        // TODO: should return bytes instead
+        self.store.blobs().export(ticket.hash(), abs_path).await?;
+        // let mut progress = iroh_blobs::get::request::get_blob(connection, ticket.hash());
+
+        // TODO: what about progress?!
+
+        Ok(())
+
+
+        // let addr = self.router.endpoint().node_addr().initialized().await;
+        //
+        // let connection = endpoint.connect(ticket.addr().id, iroh_blobs::ALPN).await?;
+        // let mut progress = iroh_blobs::get::request::get_blob(connection, ticket.hash());
+        //
+        // // let stats = if cli.progress {
+        // //     loop {
+        // //         match progress.next().await {
+        // //             Some(GetBlobItem::Item(item)) => match item {
+        // //                 BaoContentItem::Leaf(leaf) => {
+        // //                     tokio::io::stdout().write_all(&leaf.data).await?;
+        // //                 }
+        // //                 BaoContentItem::Parent(parent) => {
+        // //                     tracing::info!("Parent: {parent:?}");
+        // //                 }
+        // //             },
+        // //             Some(GetBlobItem::Done(stats)) => {
+        // //                 break stats;
+        // //             }
+        // //             Some(GetBlobItem::Error(err)) => {
+        // //                 anyhow::bail!("Error while streaming blob: {err}");
+        // //             }
+        // //             None => {
+        // //                 anyhow::bail!("Stream ended unexpectedly.");
+        // //             }
+        // //         }
+        // //     }
+        // // };
+        //
+        // let (bytes, _stats) = progress.bytes_and_stats().await?;
+        // Ok(bytes)
     }
 
     pub async fn close(&self) -> Result<()> {
@@ -166,9 +222,7 @@ impl ProtocolHandler for MessageProtocol {
         connection.closed().await;
 
         let evt = ConnEvent::ReceivedMessage(node_id.to_string(), res.to_string());
-        let _ = self
-            .message_watcher_tx
-            .send(Some(evt));
+        let _ = self.message_watcher_tx.send(Some(evt));
 
         Ok(())
     }

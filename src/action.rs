@@ -207,7 +207,7 @@ pub async fn perform_action(
     match action {
         // we have a new message to send through the connection
         CommAction::SendMessage(to_node_id, msg) => {
-            println!("[action][SendMessage] {to_node_id}, {msg}");
+            println!("[action][SendMessage] {to_node_id}");
             return on_send_message(conn, to_node_id, msg).await;
         }
 
@@ -233,7 +233,7 @@ pub async fn perform_action(
 
         // puller has download the ticket, we can safely remove it
         CommAction::DownloadDone(from_node_id, ticket_id) => {
-            println!("[action][DownloadDone] {from_node_id}, {ticket_id}");
+            println!("[action][DownloadDone] {from_node_id}");
             return on_download_done(from_node_id, ticket_id).await;
         }
 
@@ -310,13 +310,14 @@ async fn on_request_target(
 }
 
 async fn on_download_target(
-    _conn: &Arc<Mutex<Connection>>,
+    conn: &Arc<Mutex<Connection>>,
     from_node_id: String,
     target_name: String,
     ticket_id: String,
 ) -> Result<()> {
     println!("data on target {from_node_id} {target_name} {ticket_id}");
-    // TODO: ...
+
+    conn.lock().await.download_ticket(ticket_id, "tmp_foo".to_owned()).await?;
 
     Ok(())
 }

@@ -126,13 +126,14 @@ async fn run_event_check(
 
     // check for events on the connection
     if let Some(connection::ConnEvent::ReceivedMessage(node_id, raw_msg)) = conn_event {
-        println!("- message received: {node_id}, {raw_msg}");
+        println!("[event_check][conn] message received: {node_id}");
         let action = action::CommAction::from_namespaced_msg(&node_id, &raw_msg);
         actions_queue.lock().await.push(action);
     }
 
     // check if watcher has changed targets events
     if let Some(targets) = target_watcher.get_changed_targets() {
+        println!("[event_check][watcher] targets changed: {}", targets.len());
         let config = config::Config::new("").unwrap();
         let target_names: Vec<String> = targets.iter().map(|t| t.name.clone()).collect();
         let node_ids: Vec<String> = targets
@@ -187,10 +188,10 @@ async fn run_queue_check(
             }
 
             let start = Utc::now().timestamp_millis();
-            println!("[action] performing:  start");
+            println!("[queue_check][action] start...");
             let res = perform_action(conn, sync_process, actions_queue, action).await;
             let time_spent = Utc::now().timestamp_millis() - start;
-            println!("[action] performing: end. took: {time_spent}ms");
+            println!("[queue_check][action] end ({time_spent}ms)");
 
             res
         }
