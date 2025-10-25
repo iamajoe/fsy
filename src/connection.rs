@@ -1,8 +1,8 @@
 use anyhow::Result;
 use iroh::{
-    Endpoint, NodeAddr, NodeId, SecretKey,
-    protocol::{self, AcceptError, ProtocolHandler},
+    protocol::{self, AcceptError, ProtocolHandler}, Endpoint, NodeAddr, NodeId, SecretKey, Watcher
 };
+use iroh_blobs::{store::mem::MemStore, ticket::BlobTicket, BlobsProtocol};
 use std::{path::Path, str::FromStr};
 use tokio::sync::watch;
 
@@ -18,6 +18,8 @@ pub enum ConnEvent {
 pub struct Connection {
     router: protocol::Router,
     message_watcher_rx: watch::Receiver<Option<ConnEvent>>,
+    blobs: BlobsProtocol,
+    store: MemStore,
 }
 
 impl Connection {
@@ -37,16 +39,16 @@ impl Connection {
         // setup the protocol for the blobs back and forth
         // should use a file system on temporary dir
         // sending a file with gbs will fill up the ram and crash
-        // let store = MemStore::new();
+        let store = MemStore::new();
         // let store = FsStore::load(store_path).await.unwrap();
-        // let blobs = BlobsProtocol::new(&store, endpoint.clone(), None);
+        let blobs = BlobsProtocol::new(&store, endpoint.clone(), None);
 
         // TODO: how can i check for the allowed list?
         //       how do i know that the user can actually connect?
         let (message_watcher_tx, message_watcher_rx) = watch::channel(None);
         let message_protocol = MessageProtocol::new(message_watcher_tx);
         let router = protocol::Router::builder(endpoint.clone())
-            // .accept(iroh_blobs::ALPN, blobs)
+            .accept(iroh_blobs::ALPN, blobs.clone()) // TODO: will this work?!
             .accept(MESSAGE_PROTOCOL_ALPN, message_protocol)
             .spawn();
 
@@ -59,6 +61,8 @@ impl Connection {
         Ok(Self {
             router,
             message_watcher_rx,
+            blobs,
+            store,
         })
     }
 
@@ -102,6 +106,14 @@ impl Connection {
         conn.close(0u32.into(), close_msg.as_bytes());
 
         Ok(())
+    }
+
+    pub async fn get_file_ticket(&self, file_path: String) -> Result<BlobTicket> {
+        // TODO: need to actually read the file bytes
+        let tag = self.store.add_slice(file_path.into_bytes()).await?;
+        let addr = self.router.endpoint().node_addr().initialized().await;
+        let ticket = BlobTicket::new(addr, tag.hash, tag.format);
+        Ok(ticket)
     }
 
     pub async fn close(&self) -> Result<()> {

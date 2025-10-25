@@ -187,10 +187,10 @@ async fn run_queue_check(
             }
 
             let start = Utc::now().timestamp_millis();
-            println!("- performing action: start");
+            println!("[action] performing:  start");
             let res = perform_action(conn, sync_process, actions_queue, action).await;
             let time_spent = Utc::now().timestamp_millis() - start;
-            println!("- performing action: end. took: {time_spent}");
+            println!("[action] performing: end. took: {time_spent}ms");
 
             res
         }

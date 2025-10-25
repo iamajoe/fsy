@@ -143,6 +143,20 @@ impl SyncProcess {
             vec![TargetMode::Pull, TargetMode::PushPull],
         )
     }
+
+    pub fn get_push_targets_by_name(
+        &self,
+        target_name: &str,
+    ) -> Vec<TargetGroup> {
+        // TODO: what about timestamp?
+        //       we should be careful so we don't download something
+        //       that has just been downloaded for example
+        get_targets_by_name(
+            &self.target_groups,
+            target_name,
+            vec![TargetMode::Push, TargetMode::PushPull],
+        )
+    }
 }
 
 fn get_targets_by_path(

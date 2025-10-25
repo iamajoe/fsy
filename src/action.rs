@@ -94,8 +94,8 @@ pub enum CommAction {
     RequestTarget(String, String),
 
     // DownloadTarget: puller takes ticket_id and downloads it
-    // - DownloadTarget(from_node_id, ticket_id)
-    DownloadTarget(String, String),
+    // - DownloadTarget(from_node_id, target_name, ticket_id)
+    DownloadTarget(String, String, String),
 
     // DownloadDone: pusher knows download is done and closes the ticket
     // - DownloadDone(from_node_id, ticket_id)
@@ -124,7 +124,15 @@ impl CommAction {
                 Self::RequestTarget(node_id.to_owned(), raw_msg.to_owned())
             }
             ActionNamespace::DownloadTarget => {
-                Self::DownloadTarget(node_id.to_owned(), raw_msg.to_owned())
+                if let Some(raw_msg) = raw_msg.split_once(";") {
+                    return Self::DownloadTarget(
+                        node_id.to_owned(),
+                        raw_msg.0.to_owned(),
+                        raw_msg.1.to_owned(),
+                    );
+                }
+
+                Self::Unknown
             }
             ActionNamespace::DownloadDone => {
                 Self::DownloadDone(node_id.to_owned(), raw_msg.to_owned())
@@ -164,8 +172,9 @@ impl CommAction {
                 let msg = template_msg_with_ns(ActionNamespace::RequestTarget, target_name);
                 Self::SendMessage(to_node_id.to_owned(), msg)
             }
-            Self::DownloadTarget(from_node_id, ticket_id) => {
-                let msg = template_msg_with_ns(ActionNamespace::DownloadTarget, ticket_id);
+            Self::DownloadTarget(from_node_id, target_name, ticket_id) => {
+                let msg = format!("{target_name};{ticket_id}");
+                let msg = template_msg_with_ns(ActionNamespace::DownloadTarget, &msg);
                 Self::SendMessage(from_node_id.to_owned(), msg)
             }
             Self::DownloadDone(from_node_id, ticket_id) => {
@@ -198,13 +207,13 @@ pub async fn perform_action(
     match action {
         // we have a new message to send through the connection
         CommAction::SendMessage(to_node_id, msg) => {
-            println!("action: SendMessage: {to_node_id}, {msg}");
+            println!("[action][SendMessage] {to_node_id}, {msg}");
             return on_send_message(conn, to_node_id, msg).await;
         }
 
         // received a target changed, lets then request the target if that is the case
         CommAction::TargetHasChanged(to_node_id, target_name) => {
-            println!("action: TargetHasChanged: {to_node_id}, {target_name}");
+            println!("[action][TargetHasChanged] {to_node_id}, {target_name}");
             return on_target_has_changed(sync_process, actions_queue, to_node_id, target_name)
                 .await;
         }
@@ -212,31 +221,31 @@ pub async fn perform_action(
         // a request has been done by the puller, as such we prepare the ticket id
         // and send the message to the puller
         CommAction::RequestTarget(from_node_id, target_name) => {
-            println!("action: RequestTarget: {from_node_id}, {target_name}");
-            return on_request_target(from_node_id, target_name).await;
+            println!("[action][RequestTarget] {from_node_id}, {target_name}");
+            return on_request_target(conn, actions_queue, from_node_id, target_name).await;
         }
 
         // pusher has prepared a ticket id for us to download if we want
-        CommAction::DownloadTarget(from_node_id, ticket_id) => {
-            println!("action: DownloadTarget: {from_node_id}, {ticket_id}");
-            return on_download_target(from_node_id, ticket_id).await;
+        CommAction::DownloadTarget(from_node_id, target_name, ticket_id) => {
+            println!("[action][DownloadTarget] {from_node_id}, {target_name}");
+            return on_download_target(conn, from_node_id, target_name, ticket_id).await;
         }
 
         // puller has download the ticket, we can safely remove it
         CommAction::DownloadDone(from_node_id, ticket_id) => {
-            println!("action: DownloadDone: {from_node_id}, {ticket_id}");
+            println!("[action][DownloadDone] {from_node_id}, {ticket_id}");
             return on_download_done(from_node_id, ticket_id).await;
         }
 
         // puller requested the timestamp status of a target from a pusher
         CommAction::RequestTargetTimestamp(from_node_id, target_name) => {
-            println!("action: RequestTargetTimestamp: {from_node_id}, {target_name}");
+            println!("[action][RequestTargetTimestamp] {from_node_id}, {target_name}");
             return on_request_target_timestamp(from_node_id, target_name).await;
         }
 
         // pusher informs the timestamp status of a target to a puller
         CommAction::TargetTimestamp(from_node_id, target_name, timestamp) => {
-            println!("action: TargetTimestamp: {from_node_id}, {target_name}, {timestamp}");
+            println!("[action][TargetTimestamp] {from_node_id}, {target_name}, {timestamp}");
             return on_target_timestamp(from_node_id, target_name, timestamp).await;
         }
 
@@ -280,17 +289,34 @@ async fn on_target_has_changed(
     Ok(())
 }
 
-async fn on_request_target(_from_node_id: String, _target_name: String) -> Result<()> {
-    // let ticket_id = "".to_string();
-    // let _actions = CommAction::to_download_targets(ticket_id, vec![node_id]);
-    // TODO: do we have this target?!
-    // TODO: check if msg is needed and if we want to download, if we want, request the ticket
+async fn on_request_target(
+    conn: &Arc<Mutex<Connection>>,
+    actions_queue: &Arc<Mutex<queue::Queue<CommAction>>>,
+    from_node_id: String,
+    target_name: String,
+) -> Result<()> {
+    let ticket_id = conn.lock().await.get_file_ticket("".to_owned()).await?;
+
+    // get all the request target actions to request to the pusher
+    let send_actions: Vec<CommAction> = vec![
+        CommAction::DownloadTarget(from_node_id.clone(), target_name, ticket_id.to_string())
+            .to_send_message(),
+    ];
+
+    // cache the actions so that the event looper can send the requests
+    actions_queue.lock().await.push_multiple(send_actions);
 
     Ok(())
 }
 
-async fn on_download_target(_from_node_id: String, _ticket_id: String) -> Result<()> {
-    // ...
+async fn on_download_target(
+    _conn: &Arc<Mutex<Connection>>,
+    from_node_id: String,
+    target_name: String,
+    ticket_id: String,
+) -> Result<()> {
+    println!("data on target {from_node_id} {target_name} {ticket_id}");
+    // TODO: ...
 
     Ok(())
 }
