@@ -2,9 +2,9 @@ mod action;
 mod config;
 mod connection;
 mod key;
+mod path_watcher;
 mod queue;
 mod target;
-mod target_watcher;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -16,7 +16,7 @@ use tokio::time::sleep;
 
 use self::action::{CommAction, perform_action};
 use self::connection::Connection;
-use self::target_watcher::{SyncProcess, TargetWatcher};
+use self::path_watcher::PathWatcher;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -32,10 +32,6 @@ async fn main() -> Result<()> {
     let node_id = conn.lock().await.get_node_id();
     println!("- waiting for requests. public id: {node_id}");
 
-    // setup the process
-    println!("initializing sync process");
-    let sync_process = SyncProcess::new(config.target_groups.clone());
-
     // setup the queues
     let actions_queue: queue::Queue<CommAction> = queue::Queue::new(queue::MAX_CAPACITY);
     let actions_queue: Arc<Mutex<queue::Queue<CommAction>>> =
@@ -48,12 +44,14 @@ async fn main() -> Result<()> {
     let event_is_running_rx = is_running_rx.clone();
     let event_queue = actions_queue.clone();
     let event_conn = conn.clone();
-    let event_sync_process = sync_process.clone();
+    let event_nodes = config.nodes.clone();
+    let event_target_groups = config.target_groups.clone();
     tokio::spawn(async move {
         println!("starting watcher sync");
-        let mut target_watcher =
-            TargetWatcher::new(event_sync_process, config.local.push_debounce_millisecs).unwrap();
-        target_watcher.start().unwrap();
+        let push_groups = target::get_push_group_paths(&event_target_groups);
+        let push_debounce = config.local.push_debounce_millisecs;
+        let mut path_watcher = PathWatcher::new(push_groups, push_debounce).unwrap();
+        path_watcher.start().unwrap();
 
         println!("looping event checker");
         loop {
@@ -61,19 +59,27 @@ async fn main() -> Result<()> {
                 break;
             }
 
-            target_watcher = run_event_check(&event_conn, target_watcher, &event_queue)
-                .await
-                .unwrap();
+            path_watcher = run_event_check(
+                &event_conn,
+                &event_nodes,
+                &event_target_groups,
+                path_watcher,
+                &event_queue,
+            )
+            .await
+            .unwrap();
             sleep(Duration::from_millis(config.local.loop_debounce_millisecs)).await;
         }
 
-        target_watcher.close().unwrap();
+        path_watcher.close().unwrap();
     });
 
     // handle the queues
     let queue_is_running_rx = is_running_rx.clone();
     let queue_queue = actions_queue.clone();
     let queue_conn = conn.clone();
+    let queue_nodes = config.nodes.clone();
+    let queue_target_groups = config.target_groups.clone();
     tokio::spawn(async move {
         println!("looping queues");
         loop {
@@ -81,7 +87,14 @@ async fn main() -> Result<()> {
                 break;
             }
 
-            if let Err(e) = run_queue_check(&queue_conn, &sync_process, &queue_queue).await {
+            if let Err(e) = run_queue_check(
+                &queue_target_groups,
+                &queue_nodes,
+                &queue_conn,
+                &queue_queue,
+            )
+            .await
+            {
                 // NOTE: we don't want to mess the process if an error comes in, keep doing it
                 println!("- error: {e}");
             }
@@ -114,9 +127,11 @@ async fn main() -> Result<()> {
 //   - it creates then actions to send through the connection
 async fn run_event_check(
     conn: &Arc<Mutex<Connection>>,
-    target_watcher: TargetWatcher,
+    nodes: &[target::NodeData],
+    target_groups: &[target::TargetGroup],
+    path_watcher: PathWatcher,
     actions_queue: &Arc<Mutex<queue::Queue<CommAction>>>,
-) -> Result<TargetWatcher> {
+) -> Result<PathWatcher> {
     // check for events on the connection
     let conn_event: Option<connection::ConnEvent>;
     {
@@ -132,38 +147,41 @@ async fn run_event_check(
     }
 
     // check if watcher has changed targets events
-    if let Some(targets) = target_watcher.get_changed_targets() {
+    if let Some(targets) = path_watcher.get_changed_targets() {
         println!("[event_check][watcher] targets changed: {}", targets.len());
-        let config = config::Config::new("").unwrap();
-        let target_names: Vec<String> = targets.iter().map(|t| t.name.clone()).collect();
-        let node_ids: Vec<String> = targets
-            .iter()
-            .flat_map(|target| {
-                target.get_node_ids(
-                    &config.nodes,
-                    &[target::TargetMode::Push, target::TargetMode::PushPull],
-                )
-            })
-            .collect();
 
-        let target_changed_actions: Vec<CommAction> = target_names
-            .iter()
-            .flat_map(|target_name| {
-                node_ids.iter().map(|node_id| {
-                    CommAction::TargetHasChanged(node_id.to_owned(), target_name.clone())
+        // retrieve nodes of the affected target groups and map to the action
+        let mut target_actions: Vec<CommAction> = vec![];
+        for changed_target in targets {
+            let groups =
+                target::get_push_groups_with_path(target_groups, &changed_target.base_path);
+            for group in groups {
+                let actions: Vec<CommAction> = group
+                    .get_node_ids(
+                        nodes,
+                        &[target::TargetMode::Push, target::TargetMode::PushPull],
+                    )
+                    .iter()
+                    .map(|node_id| {
+                        CommAction::TargetHasChanged(
+                            node_id.to_owned(),
+                            group.name.clone(),
+                            changed_target.relative_path.clone(),
+                        )
                         .to_send_message()
-                })
-            })
-            .collect();
-        if !target_changed_actions.is_empty() {
-            actions_queue
-                .lock()
-                .await
-                .push_multiple(target_changed_actions);
+                    })
+                    .collect();
+                target_actions.extend(actions);
+            }
+        }
+
+        // cache all the actions to be sent
+        if !target_actions.is_empty() {
+            actions_queue.lock().await.push_multiple(target_actions);
         }
     }
 
-    Ok(target_watcher)
+    Ok(path_watcher)
 }
 
 // run_queue_check runs all the queue items we have be it for
@@ -171,8 +189,9 @@ async fn run_event_check(
 // - if on the connection, it converts the action and sends a message
 // - if on the sync, it consumes an action and performs
 async fn run_queue_check(
+    target_groups: &[target::TargetGroup],
+    nodes: &[target::NodeData],
     conn: &Arc<Mutex<Connection>>,
-    sync_process: &SyncProcess,
     actions_queue: &Arc<Mutex<queue::Queue<CommAction>>>,
 ) -> Result<()> {
     let action: Option<CommAction>;
@@ -189,7 +208,7 @@ async fn run_queue_check(
 
             let start = Utc::now().timestamp_millis();
             println!("[queue_check][action] start...");
-            let res = perform_action(conn, sync_process, actions_queue, action).await;
+            let res = perform_action(target_groups, nodes, conn, actions_queue, action).await;
             let time_spent = Utc::now().timestamp_millis() - start;
             println!("[queue_check][action] end ({time_spent}ms)");
 

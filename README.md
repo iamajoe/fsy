@@ -24,11 +24,15 @@ After you run the first time, a config will be created under `$HOME/.config/fsy/
 ```toml
 # trustees is the list of nodes you want to interact with
 [[nodes]]
-name = "desktop" # friendly name id of the environment
+# friendly name id of the environment
+# node name needs to be unique
+name = "desktop"
 id = "<env node id>"
 
 [[target_groups]]
-name = "amazing_file" # friendly name for the sync to be done, needs to be common to the configs
+# friendly name for the sync to be done, needs to be common to the configs
+# target group name needs to be unique
+name = "amazing_file"
 path = "/Users/joe/amazing_file.txt" # file to sync
 
 # targets is where and how this sync should be done
@@ -53,9 +57,5 @@ loop_debounce_millisecs = 250 # runs queue and events checks every x ms
     1. [ ] Create a backup file upon start of downloading
     2. [ ] On watch file changes, check if there is a bkp file
     3. [ ] Delete it after download
-- [ ] Support directories
-    1. [ ] Implement relative paths
-    2. [ ] Watch changes on recursive
-        - *Does the watcher support out of the box directories?*
-    3. [ ] Inform of the multiple paths and relative paths to be downloaded
+- [ ] Test directories and single files
 - [ ] On initialization, perform check for sync
