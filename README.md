@@ -60,4 +60,6 @@ loop_debounce_millisecs = 250 # runs queue and events checks every x ms
     2. [ ] On watch file changes, check if there is a bkp file
     3. [ ] Delete backup/swp file after download
 - [ ] Test directories and single files
-- [ ] On initialization, perform check for sync
+- [ ] On network listen, check for possible new syncs
+    - [ ] On start
+    - [ ] After network is closed
