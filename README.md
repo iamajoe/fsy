@@ -24,13 +24,15 @@ After you run the first time, a config will be created under `$HOME/.config/fsy/
 ```toml
 # trustees is the list of nodes you want to interact with
 [[nodes]]
-# friendly name id of the environment
+# friendly name id on the current node environment to be used
+# on the target groups target node_name
 # node name needs to be unique
 name = "desktop"
-id = "<env node id>"
+id = "<env node_id>"
 
 [[target_groups]]
-# friendly name for the sync to be done, needs to be common to the configs
+# friendly name for the sync to be done, needs to be common to the 
+# node configurations to identify the push/pull
 # target group name needs to be unique
 name = "amazing_file"
 path = "/Users/joe/amazing_file.txt" # file to sync
@@ -47,15 +49,15 @@ node_name = "desktop" # trustee friendly name id
 [local]
 # set of keys to build up your local node id
 public_key = "..."
-secret_key = [1]
+secret_key = []
 push_debounce_millisecs = 500 # run a push check every x ms
 loop_debounce_millisecs = 250 # runs queue and events checks every x ms
 ```
 
 ### TODO
 - [ ] Lock mechanism
-    1. [ ] Create a backup file upon start of downloading
+    1. [ ] Create a backup/swp file upon start of downloading
     2. [ ] On watch file changes, check if there is a bkp file
-    3. [ ] Delete it after download
+    3. [ ] Delete backup/swp file after download
 - [ ] Test directories and single files
 - [ ] On initialization, perform check for sync
