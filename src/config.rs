@@ -78,8 +78,37 @@ impl Config {
             parsed.local.secret_key = raw_secret_key.secret().to_bytes();
         }
 
+        // make sure the configuration is valid
+        validate_config(&parsed)?;
+
         Ok(parsed)
     }
+}
+
+fn validate_config(conf: &Config) -> Result<()> {
+    // node names need to be unique
+    for node_a in &conf.nodes {
+        for node_b in &conf.nodes {
+            if node_a.id == node_b.id || node_a.name != node_b.name {
+                continue;
+            }
+
+            bail!("node names need to be unique");
+        }
+    }
+
+    // target names need to be unique
+    for target_a in &conf.target_groups {
+        for target_b in &conf.target_groups {
+            if target_a.path == target_b.path || target_a.name != target_b.name {
+                continue;
+            }
+
+            bail!("target group names need to be unique");
+        }
+    }
+
+    Ok(())
 }
 
 fn save_config(conf: Config) -> Result<Config> {
