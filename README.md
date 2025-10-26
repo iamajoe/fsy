@@ -48,3 +48,14 @@ push_debounce_millisecs = 500 # run a push check every x ms
 loop_debounce_millisecs = 250 # runs queue and events checks every x ms
 ```
 
+### TODO
+- [ ] Lock mechanism
+    1. [ ] Create a backup file upon start of downloading
+    2. [ ] On watch file changes, check if there is a bkp file
+    3. [ ] Delete it after download
+- [ ] Support directories
+    1. [ ] Implement relative paths
+    2. [ ] Watch changes on recursive
+        - *Does the watcher support out of the box directories?*
+    3. [ ] Inform of the multiple paths and relative paths to be downloaded
+- [ ] On initialization, perform check for sync
