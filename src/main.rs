@@ -6,6 +6,7 @@ mod path_watcher;
 mod queue;
 mod target;
 
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -14,7 +15,7 @@ use chrono::Utc;
 use tokio::sync::{Mutex, watch::channel};
 use tokio::time::sleep;
 
-use self::action::{CommAction, perform_action};
+use self::action::{get_target_locked_path, is_target_locked, perform_action, CommAction};
 use self::connection::Connection;
 use self::path_watcher::PathWatcher;
 
@@ -153,6 +154,14 @@ async fn run_event_check(
         // retrieve nodes of the affected target groups and map to the action
         let mut target_actions: Vec<CommAction> = vec![];
         for changed_target in targets {
+            // check if we have a lock in place, if we have, there is an update going,
+            // we don't want to create a change upon that
+            let file_path = Path::new(&changed_target.base_path).join(&changed_target.relative_path);
+            let file_path = get_target_locked_path(file_path);
+            if is_target_locked(&file_path) {
+                continue;
+            }
+
             let groups =
                 target::get_push_groups_with_path(target_groups, &changed_target.base_path);
             for group in groups {

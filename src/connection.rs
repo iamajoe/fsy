@@ -3,7 +3,7 @@ use iroh::{
     Endpoint, NodeAddr, NodeId, SecretKey, Watcher,
     protocol::{self, AcceptError, ProtocolHandler},
 };
-use iroh_blobs::{store::mem::MemStore, ticket::BlobTicket, BlobsProtocol};
+use iroh_blobs::{store::{fs::FsStore, mem::MemStore}, ticket::BlobTicket, BlobsProtocol};
 use std::{ path::{Path, PathBuf}, str::FromStr };
 use tokio::sync::watch;
 
@@ -19,11 +19,12 @@ pub enum ConnEvent {
 pub struct Connection {
     router: protocol::Router,
     message_watcher_rx: watch::Receiver<Option<ConnEvent>>,
-    store: MemStore,
+    // store: MemStore,
+    store: FsStore,
 }
 
 impl Connection {
-    pub async fn new(raw_secret_key: &[u8; 32], _store_path: &Path) -> Result<Self> {
+    pub async fn new(raw_secret_key: &[u8; 32], store_path: &Path) -> Result<Self> {
         let secret_key = SecretKey::from_bytes(raw_secret_key);
 
         let endpoint = Endpoint::builder()
@@ -39,8 +40,8 @@ impl Connection {
         // setup the protocol for the blobs back and forth
         // should use a file system on temporary dir
         // sending a file with gbs will fill up the ram and crash
-        let store = MemStore::new();
-        // let store = FsStore::load(store_path).await.unwrap();
+        // let store = MemStore::new();
+        let store = FsStore::load(store_path).await.unwrap();
         let blobs = BlobsProtocol::new(&store, endpoint.clone(), None);
 
         // TODO: how can i check for the allowed list?

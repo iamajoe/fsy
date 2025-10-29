@@ -1,8 +1,10 @@
 use anyhow::Result;
 use chrono::{DateTime, Utc};
-use std::fmt;
-use std::path::Path;
+use std::fs::File;
+use std::io::prelude::*;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::{fmt, fs, thread, time};
 
 use tokio::sync::Mutex;
 
@@ -322,6 +324,21 @@ pub async fn perform_action(
     Ok(())
 }
 
+pub fn get_target_locked_path(target: PathBuf) -> PathBuf {
+    target.join(".lock")
+}
+
+pub fn is_target_locked(target: &Path) -> bool {
+    let lock_path = get_target_locked_path(target.to_path_buf());
+    if let Ok(exists) = fs::exists(lock_path)
+        && exists
+    {
+        return true;
+    }
+
+    false
+}
+
 async fn on_target_has_changed(
     target_groups: &[target::TargetGroup],
     to_node_id: String,
@@ -379,14 +396,44 @@ async fn on_download_target(
             return Ok(());
         }
 
-        let joined_path = Path::new(&target.path).join(relative_path);
-        let joined_path = joined_path.to_str();
-        if let Some(p) = joined_path {
+        let file_path = Path::new(&target.path).join(&relative_path);
+
+        // TODO: this locking strategy won't work because it means that the last update
+        //       won't get through if in the middle of an update
+        //       we need to be able to cancel the old one
+        //       unless the queue works file by file and waits for the last one
+        //       need to test that
+
+        // lets make sure there isn't anything going through, no lock in place
+        // which would mean that it is already updating
+        if is_target_locked(&file_path) {
+            return Ok(());
+        }
+
+        // make a lock so we know that this is happening
+        let lock_path = get_target_locked_path(file_path.clone());
+        let mut lock_file = File::create(&lock_path)?;
+        lock_file.write_all(b"")?;
+
+        // start the download to a swap file
+        let joined_path = file_path.join(".swp");
+        // TODO: do we need to remove the swap or are we fine in overriding?
+        if let Some(p) = joined_path.to_str() {
             conn.lock()
                 .await
                 .download_ticket_to_path(ticket_id, p.to_owned())
                 .await?;
         }
+
+        // move swap to the final file
+        fs::remove_file(&file_path)?;
+        fs::rename(joined_path, &file_path)?;
+
+        // ready to remove the lock now
+        // NOTE: we wait so we don't trigger a file change in case it is a PushPull
+        // TODO: should probably be on a configuration instead of hardcoded
+        thread::sleep(time::Duration::from_secs(2));
+        fs::remove_file(lock_path)?;
     }
 
     // TODO: send a done. there might be multiple sends so... need to be careful about

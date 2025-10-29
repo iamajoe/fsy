@@ -56,9 +56,14 @@ loop_debounce_millisecs = 250 # runs queue and events checks every x ms
 
 ### TODO
 - [ ] Lock mechanism
-    1. [ ] Create a backup/swp file upon start of downloading
-    2. [ ] On watch file changes, check if there is a bkp file
-    3. [ ] Delete backup/swp file after download
+    1. [x] On file changed event listen, check if there is a lock file. Ignore if there is
+    2. [x] Create an empty swp file and lock file upon start of downloading
+    3. [x] Download to the swp file
+    4. [ ] On error, delete swp file
+    5. [x] Upon download done
+        1. [x] Remove original file
+        2. [x] Move swp to the original path
+        3. [x] Remove lock file after x amount of time
 - [ ] Test directories and single files
 - [ ] On network listen, check for possible new syncs
     - [ ] On start
