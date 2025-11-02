@@ -1,12 +1,9 @@
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use chrono::{DateTime, Utc};
 use std::fs::File;
 use std::io::prelude::*;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::{fmt, fs, thread, time};
-
-use tokio::sync::Mutex;
 
 use crate::{connection, target};
 
@@ -241,57 +238,64 @@ impl CommAction {
     }
 }
 
-pub async fn perform_action<C>(
+pub async fn perform_action<GetFileTicketF, GetFileTicketFut, DownloadTicketF, DownloadTicketFut>(
     target_groups: &[target::TargetGroup],
     nodes: &[target::NodeData],
     action: CommAction,
-    conn: &Arc<Mutex<C>>,
-) -> Result<Vec<CommAction>>
+    fn_get_file_ticket: GetFileTicketF,
+    fn_download_ticket_to_path: DownloadTicketF,
+) -> Result<(Vec<CommAction>, Vec<connection::ConnEvent>)>
 where
-    C: connection::ConnSendMessage + connection::ConnSendTicket,
+    GetFileTicketF: Fn(String) -> GetFileTicketFut + Send + Sync,
+    GetFileTicketFut: Future<Output = Result<String>> + Send,
+    DownloadTicketF: Fn(String, String) -> DownloadTicketFut + Send + Sync,
+    DownloadTicketFut: Future<Output = Result<()>> + Send,
 {
     let mut new_actions: Vec<CommAction> = vec![];
+    let mut new_conn_events: Vec<connection::ConnEvent> = vec![];
 
     match action {
         // we have a new message to send through the connection
         CommAction::SendMessage(to_node_id, msg) => {
             println!("[SendMessage] {to_node_id}");
-            conn.lock().await.send_msg_to_node(to_node_id, msg).await?;
+            new_conn_events.push(connection::ConnEvent::SendMessageToNode(to_node_id, msg));
         }
 
         // received a target changed, lets then request the target if that is the case
         CommAction::TargetHasChanged(to_node_id, target_name, relative_path) => {
             println!("[TargetHasChanged] {to_node_id}, {target_name}, {relative_path}");
-            new_actions =
+            let action_actions =
                 on_target_has_changed(target_groups, to_node_id, target_name, relative_path)
                     .await?;
+            new_actions.extend(action_actions);
         }
 
         // a request has been done by the puller, as such we prepare the ticket id
         // and send the message to the puller
         CommAction::RequestTarget(from_node_id, target_name, relative_path) => {
             println!("[RequestTarget] {from_node_id}, {target_name}, {relative_path}");
-            new_actions = on_request_target(
-                conn,
+            let action_actions = on_request_target(
                 target_groups,
                 from_node_id,
                 target_name,
                 relative_path,
+                fn_get_file_ticket,
             )
             .await?;
+            new_actions.extend(action_actions);
         }
 
         // pusher has prepared a ticket id for us to download if we want
         CommAction::DownloadTarget(from_node_id, target_name, relative_path, ticket_id) => {
             println!("[DownloadTarget] {from_node_id}, {target_name}");
             on_download_target(
-                conn,
                 target_groups,
                 nodes,
                 from_node_id,
                 target_name,
                 relative_path,
                 ticket_id,
+                fn_download_ticket_to_path,
             )
             .await?;
         }
@@ -318,7 +322,7 @@ where
         _ => {}
     }
 
-    Ok(new_actions)
+    Ok((new_actions, new_conn_events))
 }
 
 pub fn get_target_locked_path(target: PathBuf) -> PathBuf {
@@ -354,49 +358,47 @@ async fn on_target_has_changed(
     Ok(vec![])
 }
 
-async fn on_request_target<C>(
-    conn: &Arc<Mutex<C>>,
+async fn on_request_target<F, Fut>(
     target_groups: &[target::TargetGroup],
     from_node_id: String,
     target_name: String,
     relative_path: String,
-) -> Result<Vec<CommAction>>
+    fn_get_file_ticket: F,
+) -> Result<Option<CommAction>>
 where
-    C: connection::ConnSendTicket,
+    F: Fn(String) -> Fut + Send + Sync,
+    Fut: Future<Output = Result<String>> + Send,
 {
     let target_group = target::get_push_group_with_name(target_groups, &target_name);
     if let Some(target) = target_group {
-        let ticket_id = conn.lock().await.get_file_ticket(target.path).await?;
-        let action = CommAction::DownloadTarget(
-            from_node_id,
-            target_name,
-            relative_path,
-            ticket_id.to_string(),
-        )
-        .to_send_message();
-        return Ok(vec![action]);
+        let ticket_id = fn_get_file_ticket(target.path).await.unwrap();
+        let action =
+            CommAction::DownloadTarget(from_node_id, target_name, relative_path, ticket_id)
+                .to_send_message();
+        return Ok(Some(action));
     }
 
-    Ok(vec![])
+    Ok(None)
 }
 
-async fn on_download_target<C>(
-    conn: &Arc<Mutex<C>>,
+async fn on_download_target<F, Fut>(
     target_groups: &[target::TargetGroup],
     nodes: &[target::NodeData],
     from_node_id: String,
     target_name: String,
     relative_path: String,
     ticket_id: String,
-) -> Result<()>
+    fn_download_ticket_to_path: F,
+) -> Result<Option<connection::ConnEvent>>
 where
-    C: connection::ConnSendTicket,
+    F: Fn(String, String) -> Fut + Send + Sync,
+    Fut: Future<Output = Result<()>> + Send,
 {
     let target_group = target::get_pull_group_with_name(target_groups, &target_name);
     if let Some(target) = target_group {
         // check if the node id is on the pull list
         if !target::group_has_node_id(&target, nodes, &from_node_id) {
-            return Ok(());
+            return Ok(None);
         }
 
         let file_path = Path::new(&target.path).join(&relative_path);
@@ -410,7 +412,7 @@ where
         // lets make sure there isn't anything going through, no lock in place
         // which would mean that it is already updating
         if is_target_locked(&file_path) {
-            return Ok(());
+            return Ok(None);
         }
 
         // make a lock so we know that this is happening
@@ -420,12 +422,13 @@ where
 
         // start the download to a swap file
         let joined_path = file_path.join(".swp");
-        // TODO: do we need to remove the swap or are we fine in overriding?
         if let Some(p) = joined_path.to_str() {
-            conn.lock()
-                .await
-                .download_ticket_to_path(ticket_id, p.to_owned())
-                .await?;
+            if let Err(e) = fn_download_ticket_to_path(ticket_id, p.to_owned()).await {
+                // cleanup 
+                fs::remove_file(&joined_path)?;
+
+                return Err(anyhow!(e))
+            }
         }
 
         // move swap to the final file
@@ -442,7 +445,7 @@ where
     // TODO: send a done. there might be multiple sends so... need to be careful about
     //       removal
 
-    Ok(())
+    Ok(None)
 }
 
 async fn on_download_done(_from_node_id: String, _ticket_id: String) -> Result<()> {
@@ -576,7 +579,7 @@ mod tests {
             // (node_id, raw_msg, CommAction)
             (
                 "1234",
-                "2]]::tmp_send",
+                "2]]::tmp_send;",
                 CommAction::TargetHasChanged(
                     "1234".to_string(),
                     "tmp_send".to_string(),

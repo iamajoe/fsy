@@ -4,20 +4,16 @@ use iroh::{
     Endpoint, NodeAddr, NodeId, SecretKey, Watcher,
     protocol::{self, AcceptError, ProtocolHandler},
 };
-use iroh_blobs::{
-    BlobsProtocol,
-    store::{fs::FsStore},
-    ticket::BlobTicket,
-};
+use iroh_blobs::{BlobsProtocol, store::fs::FsStore, ticket::BlobTicket};
 use std::{
     path::{Path, PathBuf},
     str::FromStr,
 };
-use tokio::sync::watch;
+use tokio::sync::mpsc;
 
 const MESSAGE_PROTOCOL_ALPN: &[u8] = b"iroh/ping/0";
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub enum ConnEvent {
     // node_id, raw_msg
     ReceivedMessage(String, String),
@@ -32,21 +28,28 @@ pub enum ConnEvent {
     DownloadTicketToPath(String, String),
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
+pub enum ConnEventResult {
+    // ticket_id
+    GetFileTicket(String),
+
+    DownloadTicketToPath,
+}
+
 pub struct Connection {
     router: protocol::Router,
-    message_watcher_rx: watch::Receiver<Option<ConnEvent>>,
+    message_ch_rx: mpsc::Receiver<ConnEvent>,
     // store: MemStore,
     store: FsStore,
 }
 
 #[async_trait]
-pub trait ConnSendMessage {
+trait ConnSendMessage {
     async fn send_msg_to_node(&self, node_id: String, msg: String) -> Result<()>;
 }
 
 #[async_trait]
-pub trait ConnSendTicket {
+trait ConnSendTicket {
     async fn get_file_ticket(&self, file_path: String) -> Result<BlobTicket>;
     async fn download_ticket_to_path(&self, ticket_id: String, file_path: String) -> Result<()>;
 }
@@ -74,10 +77,10 @@ impl Connection {
 
         // TODO: how can i check for the allowed list?
         //       how do i know that the user can actually connect?
-        let (message_watcher_tx, message_watcher_rx) = watch::channel(None);
-        let message_protocol = MessageProtocol::new(message_watcher_tx);
+        let (message_ch_tx, message_ch_rx) = mpsc::channel(1000);
+        let message_protocol = MessageProtocol::new(message_ch_tx);
         let router = protocol::Router::builder(endpoint.clone())
-            .accept(iroh_blobs::ALPN, blobs.clone()) // TODO: will this work?!
+            .accept(iroh_blobs::ALPN, blobs.clone())
             .accept(MESSAGE_PROTOCOL_ALPN, message_protocol)
             .spawn();
 
@@ -89,7 +92,7 @@ impl Connection {
 
         Ok(Self {
             router,
-            message_watcher_rx,
+            message_ch_rx,
             store,
         })
     }
@@ -98,15 +101,13 @@ impl Connection {
         self.router.endpoint().node_id().to_string()
     }
 
-    pub fn get_events(&mut self) -> Result<Option<ConnEvent>> {
-        // only proceed if something has changed
-        if !self.message_watcher_rx.has_changed().unwrap() {
-            return Ok(None);
+    pub fn get_events(&mut self) -> Result<Vec<ConnEvent>> {
+        let mut evts: Vec<ConnEvent> = vec![];
+        while let Ok(msg) = self.message_ch_rx.try_recv() {
+            evts.push(msg);
         }
 
-        // check the changed data
-        let watch_msg = self.message_watcher_rx.borrow_and_update().clone();
-        Ok(watch_msg)
+        return Ok(evts);
     }
 
     pub async fn close(&self) -> Result<()> {
@@ -159,11 +160,7 @@ impl ConnSendTicket for Connection {
         Ok(ticket)
     }
 
-    async fn download_ticket_to_path(
-        &self,
-        ticket_id: String,
-        file_path: String,
-    ) -> Result<()> {
+    async fn download_ticket_to_path(&self, ticket_id: String, file_path: String) -> Result<()> {
         let filename: PathBuf = file_path.parse()?;
         let abs_path = std::path::absolute(filename)?;
         let ticket: BlobTicket = ticket_id.parse()?;
@@ -219,15 +216,15 @@ impl ConnSendTicket for Connection {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct MessageProtocol {
-    message_watcher_tx: watch::Sender<Option<ConnEvent>>,
+    message_ch_tx: mpsc::Sender<ConnEvent>,
 }
 
 impl MessageProtocol {
-    pub fn new(watcher_tx: watch::Sender<Option<ConnEvent>>) -> Self {
+    pub fn new(watcher_tx: mpsc::Sender<ConnEvent>) -> Self {
         Self {
-            message_watcher_tx: watcher_tx,
+            message_ch_tx: watcher_tx,
         }
     }
 }
@@ -261,8 +258,38 @@ impl ProtocolHandler for MessageProtocol {
         connection.closed().await;
 
         let evt = ConnEvent::ReceivedMessage(node_id.to_string(), res.to_string());
-        let _ = self.message_watcher_tx.send(Some(evt));
+        let _ = self.message_ch_tx.send(evt);
 
         Ok(())
     }
+}
+
+pub async fn process_conn_event(
+    event: ConnEvent,
+    conn: &Connection,
+) -> Result<Option<ConnEventResult>> {
+    match event {
+        ConnEvent::SendMessageToNode(node_id, msg) => {
+            conn.send_msg_to_node(node_id, msg).await.unwrap();
+        }
+
+        ConnEvent::GetFileTicket(file_path) => {
+            let ticket_id = conn.get_file_ticket(file_path).await.unwrap();
+            // NOTE: special case where we want the data to be retrieved
+            return Ok(Some(ConnEventResult::GetFileTicket(ticket_id.to_string())));
+        }
+
+        ConnEvent::DownloadTicketToPath(ticket_id, file_path) => {
+            conn.download_ticket_to_path(ticket_id, file_path)
+                .await
+                .unwrap();
+
+            // NOTE: special case where we want to be informed of when done
+            return Ok(Some(ConnEventResult::DownloadTicketToPath));
+        }
+
+        _ => {}
+    }
+
+    Ok(None)
 }
