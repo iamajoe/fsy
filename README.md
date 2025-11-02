@@ -55,9 +55,7 @@ loop_debounce_millisecs = 250 # runs queue and events checks every x ms
 ```
 
 ### TODO
-- [ ] Channels instead of arc mutex for connection
 - [ ] Automated tests on each process
-- [ ] Refactor with more traits on actions and processes
 - [ ] Manual test directories and single files
 - [ ] On network listen, check for possible new syncs
     - [ ] On start
@@ -66,4 +64,3 @@ loop_debounce_millisecs = 250 # runs queue and events checks every x ms
 - [ ] Upon download
     - [ ] send done event
     - [ ] receiving the done event, remove the ticket id
-- [ ] CI/CD build various platform releases
