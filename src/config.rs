@@ -1,9 +1,7 @@
-use crate::{
-    key,
-    target::{NodeData, TargetGroup},
-};
+use crate:: target::{NodeData, TargetGroup};
 use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
+use iroh::SecretKey;
 use std::{env, ffi::OsString, fs, path::Path};
 
 const CONFIG_FILE_NAME: &str = "fsy/config.toml";
@@ -27,7 +25,7 @@ pub struct Config {
 
 impl Default for Config {
     fn default() -> Config {
-        let raw_secret_key = key::generate_node_secret_key();
+        let raw_secret_key = generate_node_secret_key();
 
         Self {
             config_path: ".config".into(),
@@ -73,7 +71,7 @@ impl Config {
             // NOTE: we regenerate then so we can use for testing for example
             //       only check if config exists because we are already generating
             //       when it is a new config file
-            let raw_secret_key = key::generate_node_secret_key();
+            let raw_secret_key = generate_node_secret_key();
             parsed.local.public_key = raw_secret_key.public().to_string();
             parsed.local.secret_key = raw_secret_key.secret().to_bytes();
         }
@@ -166,6 +164,10 @@ fn get_config_path(user_relative_path: &str) -> Result<OsString> {
             Ok(res)
         }
     }
+}
+
+pub fn generate_node_secret_key() -> SecretKey {
+    SecretKey::generate(rand::rngs::OsRng)
 }
 
 #[cfg(test)]
