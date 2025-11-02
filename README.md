@@ -53,14 +53,3 @@ secret_key = []
 push_debounce_millisecs = 500 # run a push check every x ms
 loop_debounce_millisecs = 250 # runs queue and events checks every x ms
 ```
-
-### TODO
-- [ ] Automated tests on each process
-- [ ] Manual test directories and single files
-- [ ] On network listen, check for possible new syncs
-    - [ ] On start
-    - [ ] After network is closed
-    - *Look into ticket id for the target, the tree hash might be enough for diff*
-- [ ] Upon download
-    - [ ] send done event
-    - [ ] receiving the done event, remove the ticket id
