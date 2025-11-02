@@ -49,7 +49,7 @@ async fn main() -> Result<()> {
             match conn.get_events() {
                 Ok(evts) => {
                     for evt in evts {
-                        println!("[conn][receive_event]");
+                        println!("[conn][receive_event] received event to convert");
                         if let connection::ConnEvent::ReceivedMessage(node_id, raw_msg) = evt {
                             println!("[conn][receive_event] message received: {node_id}");
                             let action =
@@ -71,7 +71,7 @@ async fn main() -> Result<()> {
 
             // handle the events incoming from other threads
             while let Ok(event) = conn_events_rx.try_recv() {
-                println!("[conn][event_send]");
+                println!("[conn][event_send] received event to process and send");
                 match connection::process_conn_event(event, &conn).await {
                     Ok(res) => {
                         if let Err(e) = conn_event_result_tx.send(res) {
