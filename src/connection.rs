@@ -66,13 +66,16 @@ impl Connection {
             // .add_discovery(discovery::mdns::MdnsDiscovery::builder())
             .bind()
             .await
-            .unwrap();
+            .map_err(|e| anyhow::anyhow!("Endpoint.discovery_n0 failed: {e}"))?;
 
         // setup the protocol for the blobs back and forth
         // should use a file system on temporary dir
         // sending a file with gbs will fill up the ram and crash
         // let store = MemStore::new();
-        let store = FsStore::load(store_path).await.unwrap();
+        let store = FsStore::load(store_path)
+            .await
+            .map_err(|e| anyhow::anyhow!("FsStore::load failed: {e}"))?;
+
         let blobs = BlobsProtocol::new(&store, endpoint.clone(), None);
 
         // TODO: how can i check for the allowed list?
@@ -107,7 +110,7 @@ impl Connection {
             evts.push(msg);
         }
 
-        return Ok(evts);
+        Ok(evts)
     }
 
     pub async fn close(&self) -> Result<()> {
@@ -121,20 +124,32 @@ impl Connection {
 #[async_trait]
 impl ConnSendMessage for Connection {
     async fn send_msg_to_node(&self, node_id: String, msg: String) -> Result<()> {
-        let node = NodeId::from_str(&node_id);
-        let node_addr = NodeAddr::new(node.unwrap());
+        let node = NodeId::from_str(&node_id)
+            .map_err(|e| anyhow::anyhow!("NodeId::from_str(&node_id) failed: {e}"))?;
+        let node_addr = NodeAddr::new(node);
 
         // open a connection to the accepting node
         let conn = self
             .router
             .endpoint()
             .connect(node_addr, MESSAGE_PROTOCOL_ALPN)
-            .await?;
+            .await
+            .map_err(|e| anyhow::anyhow!("router.endpoint().connect() failed: {e}"))?;
 
-        let (mut send, mut recv) = conn.open_bi().await?; // Open a bidirectional QUIC stream
+        // Open a bidirectional QUIC stream
+        let (mut send, mut recv) = conn
+            .open_bi()
+            .await
+            .map_err(|e| anyhow::anyhow!("conn.open_bi() failed: {e}"))?;
 
-        send.write_all(msg.as_bytes()).await?; // send message
-        send.finish()?; // signal the end of data for this particular stream
+        // send message
+        send.write_all(msg.as_bytes())
+            .await
+            .map_err(|e| anyhow::anyhow!("send.write_all(msg.as_bytes()) failed: {e}"))?;
+
+        // signal the end of data for this particular stream
+        send.finish()
+            .map_err(|e| anyhow::anyhow!("send.finish() failed: {e}"))?;
 
         // wait for the ok
         let response = recv.read_to_end(2).await?;
@@ -151,9 +166,18 @@ impl ConnSendMessage for Connection {
 #[async_trait]
 impl ConnSendTicket for Connection {
     async fn get_file_ticket(&self, file_path: String) -> Result<BlobTicket> {
-        let filename: PathBuf = file_path.parse()?;
+        let filename: PathBuf = file_path
+            .parse()
+            .map_err(|e| anyhow::anyhow!("file_path.parse() failed: {e}"))?;
+
         let abs_path = std::path::absolute(&filename)?;
-        let tag = self.store.blobs().add_path(abs_path).await?;
+        let tag = self
+            .store
+            .blobs()
+            .add_path(abs_path)
+            .await
+            .map_err(|e| anyhow::anyhow!("store.blobs().add_path failed: {e}"))?;
+
         let addr = self.router.endpoint().node_addr().initialized().await;
         let ticket = BlobTicket::new(addr, tag.hash, tag.format);
 
@@ -168,9 +192,15 @@ impl ConnSendTicket for Connection {
         let downloader = self.store.downloader(self.router.endpoint());
         downloader
             .download(ticket.hash(), Some(ticket.node_addr().node_id))
-            .await?;
+            .await
+            .map_err(|e| anyhow::anyhow!("downloader.download failed: {e}"))?;
+
         // TODO: should return bytes instead
-        self.store.blobs().export(ticket.hash(), abs_path).await?;
+        self.store
+            .blobs()
+            .export(ticket.hash(), abs_path)
+            .await
+            .map_err(|e| anyhow::anyhow!("store.blobs().export failed: {e}"))?;
 
         // let connection = self
         //     .router
@@ -258,7 +288,10 @@ impl ProtocolHandler for MessageProtocol {
         connection.closed().await;
 
         let evt = ConnEvent::ReceivedMessage(node_id.to_string(), res.to_string());
-        let _ = self.message_ch_tx.send(evt);
+        self.message_ch_tx
+            .send(evt)
+            .await
+            .map_err(AcceptError::from_err)?;
 
         Ok(())
     }
@@ -270,11 +303,17 @@ pub async fn process_conn_event(
 ) -> Result<Option<ConnEventResult>> {
     match event {
         ConnEvent::SendMessageToNode(node_id, msg) => {
-            conn.send_msg_to_node(node_id, msg).await.unwrap();
+            conn.send_msg_to_node(node_id, msg)
+                .await
+                .map_err(|e| anyhow::anyhow!("send_msg_to_node failed: {e}"))?;
         }
 
         ConnEvent::GetFileTicket(file_path) => {
-            let ticket_id = conn.get_file_ticket(file_path).await.unwrap();
+            let ticket_id = conn
+                .get_file_ticket(file_path)
+                .await
+                .map_err(|e| anyhow::anyhow!("get_file_ticket failed: {e}"))?;
+
             // NOTE: special case where we want the data to be retrieved
             return Ok(Some(ConnEventResult::GetFileTicket(ticket_id.to_string())));
         }
@@ -282,7 +321,7 @@ pub async fn process_conn_event(
         ConnEvent::DownloadTicketToPath(ticket_id, file_path) => {
             conn.download_ticket_to_path(ticket_id, file_path)
                 .await
-                .unwrap();
+                .map_err(|e| anyhow::anyhow!("download_ticket_to_path failed: {e}"))?;
 
             // NOTE: special case where we want to be informed of when done
             return Ok(Some(ConnEventResult::DownloadTicketToPath));

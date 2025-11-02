@@ -104,7 +104,6 @@ async fn main() -> Result<()> {
         let mut path_watcher = PathWatcher::new(push_groups, push_debounce).unwrap();
         path_watcher.start().unwrap();
 
-        println!("[watcher] looping");
         loop {
             if !*watcher_is_running_rx.borrow() {
                 break;
@@ -140,7 +139,7 @@ async fn main() -> Result<()> {
     let actions_nodes = config.nodes.clone();
     let actions_target_groups = config.target_groups.clone();
     tokio::spawn(async move {
-        println!("[actions] looping");
+        println!("[actions] starting");
         loop {
             if !*actions_is_running_rx.borrow() {
                 break;

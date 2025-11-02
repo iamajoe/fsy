@@ -150,7 +150,7 @@ pub async fn process_changed_targets(
 
     // check if watcher has changed targets events
     if let Some(targets) = changed_targets {
-        println!("[event_check][watcher] targets changed: {}", targets.len());
+        println!("[watcher] targets changed: {}", targets.len());
 
         // retrieve nodes of the affected target groups and map to the action
         for changed_target in targets {
