@@ -1,10 +1,18 @@
 use anyhow::Result;
+use async_trait::async_trait;
 use iroh::{
     Endpoint, NodeAddr, NodeId, SecretKey, Watcher,
     protocol::{self, AcceptError, ProtocolHandler},
 };
-use iroh_blobs::{store::{fs::FsStore, mem::MemStore}, ticket::BlobTicket, BlobsProtocol};
-use std::{ path::{Path, PathBuf}, str::FromStr };
+use iroh_blobs::{
+    BlobsProtocol,
+    store::{fs::FsStore},
+    ticket::BlobTicket,
+};
+use std::{
+    path::{Path, PathBuf},
+    str::FromStr,
+};
 use tokio::sync::watch;
 
 const MESSAGE_PROTOCOL_ALPN: &[u8] = b"iroh/ping/0";
@@ -13,6 +21,15 @@ const MESSAGE_PROTOCOL_ALPN: &[u8] = b"iroh/ping/0";
 pub enum ConnEvent {
     // node_id, raw_msg
     ReceivedMessage(String, String),
+
+    // node_id, msg
+    SendMessageToNode(String, String),
+
+    // file_path
+    GetFileTicket(String),
+
+    // ticket_id, file_path
+    DownloadTicketToPath(String, String),
 }
 
 #[derive(Clone)]
@@ -21,6 +38,17 @@ pub struct Connection {
     message_watcher_rx: watch::Receiver<Option<ConnEvent>>,
     // store: MemStore,
     store: FsStore,
+}
+
+#[async_trait]
+pub trait ConnSendMessage {
+    async fn send_msg_to_node(&self, node_id: String, msg: String) -> Result<()>;
+}
+
+#[async_trait]
+pub trait ConnSendTicket {
+    async fn get_file_ticket(&self, file_path: String) -> Result<BlobTicket>;
+    async fn download_ticket_to_path(&self, ticket_id: String, file_path: String) -> Result<()>;
 }
 
 impl Connection {
@@ -81,7 +109,17 @@ impl Connection {
         Ok(watch_msg)
     }
 
-    pub async fn send_msg_to_node(&self, node_id: String, msg: String) -> Result<()> {
+    pub async fn close(&self) -> Result<()> {
+        self.router.endpoint().close().await;
+        self.router.shutdown().await?;
+
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl ConnSendMessage for Connection {
+    async fn send_msg_to_node(&self, node_id: String, msg: String) -> Result<()> {
         let node = NodeId::from_str(&node_id);
         let node_addr = NodeAddr::new(node.unwrap());
 
@@ -107,8 +145,11 @@ impl Connection {
 
         Ok(())
     }
+}
 
-    pub async fn get_file_ticket(&self, file_path: String) -> Result<BlobTicket> {
+#[async_trait]
+impl ConnSendTicket for Connection {
+    async fn get_file_ticket(&self, file_path: String) -> Result<BlobTicket> {
         let filename: PathBuf = file_path.parse()?;
         let abs_path = std::path::absolute(&filename)?;
         let tag = self.store.blobs().add_path(abs_path).await?;
@@ -118,13 +159,19 @@ impl Connection {
         Ok(ticket)
     }
 
-    pub async fn download_ticket_to_path(&self, ticket_id: String, file_path: String) -> Result<()> {
+    async fn download_ticket_to_path(
+        &self,
+        ticket_id: String,
+        file_path: String,
+    ) -> Result<()> {
         let filename: PathBuf = file_path.parse()?;
         let abs_path = std::path::absolute(filename)?;
         let ticket: BlobTicket = ticket_id.parse()?;
 
         let downloader = self.store.downloader(self.router.endpoint());
-        downloader.download(ticket.hash(), Some(ticket.node_addr().node_id)).await?;
+        downloader
+            .download(ticket.hash(), Some(ticket.node_addr().node_id))
+            .await?;
         // TODO: should return bytes instead
         self.store.blobs().export(ticket.hash(), abs_path).await?;
 
@@ -139,7 +186,7 @@ impl Connection {
         //         Some(GetBlobItem::Item(item)) => match item {
         //             BaoContentItem::Leaf(leaf) => {
         //                 // TODO: we are not moving this yet because the file might be too big
-        //                 //       and we don't want to move it on memory in that case, we 
+        //                 //       and we don't want to move it on memory in that case, we
         //                 //       want to stream it in
         //                 //       in that case, this write, might not work at all and maybe
         //                 //       we want to get back to the download but then, how do we handle
@@ -169,13 +216,6 @@ impl Connection {
 
         // let (bytes, _stats) = progress.bytes_and_stats().await?;
         // Ok(bytes)
-    }
-
-    pub async fn close(&self) -> Result<()> {
-        self.router.endpoint().close().await;
-        self.router.shutdown().await?;
-
-        Ok(())
     }
 }
 

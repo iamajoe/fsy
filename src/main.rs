@@ -1,12 +1,12 @@
 mod action;
 mod config;
 mod connection;
+mod event_process;
 mod key;
 mod path_watcher;
 mod queue;
 mod target;
 
-use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -15,7 +15,7 @@ use chrono::Utc;
 use tokio::sync::{Mutex, watch::channel};
 use tokio::time::sleep;
 
-use self::action::{get_target_locked_path, is_target_locked, perform_action, CommAction};
+use self::action::CommAction;
 use self::connection::Connection;
 use self::path_watcher::PathWatcher;
 
@@ -60,15 +60,27 @@ async fn main() -> Result<()> {
                 break;
             }
 
-            path_watcher = run_event_check(
-                &event_conn,
+            // check for events on the connection
+            let conn_event: Option<connection::ConnEvent>;
+            {
+                // NOTE: setup scope because of the lock
+                conn_event = event_conn.lock().await.get_events().unwrap();
+            }
+
+            let new_actions = event_process::run(
                 &event_nodes,
                 &event_target_groups,
-                path_watcher,
-                &event_queue,
+                conn_event,
+                path_watcher.get_changed_targets(),
             )
             .await
             .unwrap();
+
+            {
+                // NOTE: setup scope because of the lock
+                event_queue.lock().await.push_multiple(new_actions);
+            }
+
             sleep(Duration::from_millis(config.local.loop_debounce_millisecs)).await;
         }
 
@@ -88,16 +100,38 @@ async fn main() -> Result<()> {
                 break;
             }
 
-            if let Err(e) = run_queue_check(
-                &queue_target_groups,
-                &queue_nodes,
-                &queue_conn,
-                &queue_queue,
-            )
-            .await
+            let last_action: Option<action::CommAction>;
             {
-                // NOTE: we don't want to mess the process if an error comes in, keep doing it
-                println!("- error: {e}");
+                // NOTE: setup scope because of the lock, we need to remove the lock asap
+                last_action = queue_queue.lock().await.pop();
+            }
+
+            // process the queue
+            if let Some(action) = last_action {
+                if let action::CommAction::Unknown = action {
+                    break;
+                }
+
+                let start = Utc::now().timestamp_millis();
+                println!("[queue_check][action] start...");
+                match action::perform_action(
+                    &queue_target_groups,
+                    &queue_nodes,
+                    action,
+                    &queue_conn,
+                )
+                .await
+                {
+                    Ok(new_actions) => {
+                        queue_queue.lock().await.push_multiple(new_actions);
+                    }
+                    Err(e) => {
+                        // NOTE: we don't want to mess the process if an error comes in, keep doing it
+                        println!("- error: {e}");
+                    }
+                }
+                let time_spent = Utc::now().timestamp_millis() - start;
+                println!("[queue_check][action] end ({time_spent}ms)");
             }
 
             sleep(Duration::from_millis(config.local.loop_debounce_millisecs)).await;
@@ -118,111 +152,4 @@ async fn main() -> Result<()> {
     conn.lock().await.close().await.unwrap();
 
     Ok(())
-}
-
-// run_event_check is run when there is an event on the connection
-// or the sync process. For example:
-// - a received message through the connection
-//   - it parses then the message to be of the type of action
-// - targets have changed on the syncing process
-//   - it creates then actions to send through the connection
-async fn run_event_check(
-    conn: &Arc<Mutex<Connection>>,
-    nodes: &[target::NodeData],
-    target_groups: &[target::TargetGroup],
-    path_watcher: PathWatcher,
-    actions_queue: &Arc<Mutex<queue::Queue<CommAction>>>,
-) -> Result<PathWatcher> {
-    // check for events on the connection
-    let conn_event: Option<connection::ConnEvent>;
-    {
-        // NOTE: setup scope because of the lock
-        conn_event = conn.lock().await.get_events().unwrap();
-    }
-
-    // check for events on the connection
-    if let Some(connection::ConnEvent::ReceivedMessage(node_id, raw_msg)) = conn_event {
-        println!("[event_check][conn] message received: {node_id}");
-        let action = action::CommAction::from_namespaced_msg(&node_id, &raw_msg);
-        actions_queue.lock().await.push(action);
-    }
-
-    // check if watcher has changed targets events
-    if let Some(targets) = path_watcher.get_changed_targets() {
-        println!("[event_check][watcher] targets changed: {}", targets.len());
-
-        // retrieve nodes of the affected target groups and map to the action
-        let mut target_actions: Vec<CommAction> = vec![];
-        for changed_target in targets {
-            // check if we have a lock in place, if we have, there is an update going,
-            // we don't want to create a change upon that
-            let file_path = Path::new(&changed_target.base_path).join(&changed_target.relative_path);
-            let file_path = get_target_locked_path(file_path);
-            if is_target_locked(&file_path) {
-                continue;
-            }
-
-            let groups =
-                target::get_push_groups_with_path(target_groups, &changed_target.base_path);
-            for group in groups {
-                let actions: Vec<CommAction> = group
-                    .get_node_ids(
-                        nodes,
-                        &[target::TargetMode::Push, target::TargetMode::PushPull],
-                    )
-                    .iter()
-                    .map(|node_id| {
-                        CommAction::TargetHasChanged(
-                            node_id.to_owned(),
-                            group.name.clone(),
-                            changed_target.relative_path.clone(),
-                        )
-                        .to_send_message()
-                    })
-                    .collect();
-                target_actions.extend(actions);
-            }
-        }
-
-        // cache all the actions to be sent
-        if !target_actions.is_empty() {
-            actions_queue.lock().await.push_multiple(target_actions);
-        }
-    }
-
-    Ok(path_watcher)
-}
-
-// run_queue_check runs all the queue items we have be it for
-// the connection or the syncing process. for example:
-// - if on the connection, it converts the action and sends a message
-// - if on the sync, it consumes an action and performs
-async fn run_queue_check(
-    target_groups: &[target::TargetGroup],
-    nodes: &[target::NodeData],
-    conn: &Arc<Mutex<Connection>>,
-    actions_queue: &Arc<Mutex<queue::Queue<CommAction>>>,
-) -> Result<()> {
-    let action: Option<CommAction>;
-    {
-        // NOTE: setup scope because of the lock, we need to remove the lock asap
-        action = actions_queue.lock().await.pop();
-    }
-
-    match action {
-        Some(action) => {
-            if let CommAction::Unknown = action {
-                return Ok(());
-            }
-
-            let start = Utc::now().timestamp_millis();
-            println!("[queue_check][action] start...");
-            let res = perform_action(target_groups, nodes, conn, actions_queue, action).await;
-            let time_spent = Utc::now().timestamp_millis() - start;
-            println!("[queue_check][action] end ({time_spent}ms)");
-
-            res
-        }
-        _ => Ok(()),
-    }
 }

@@ -8,8 +8,7 @@ use std::{fmt, fs, thread, time};
 
 use tokio::sync::Mutex;
 
-use crate::connection::Connection;
-use crate::{queue, target};
+use crate::{connection, target};
 
 #[derive(Debug, PartialEq)]
 enum ActionNamespace {
@@ -242,13 +241,15 @@ impl CommAction {
     }
 }
 
-pub async fn perform_action(
+pub async fn perform_action<C>(
     target_groups: &[target::TargetGroup],
     nodes: &[target::NodeData],
-    conn: &Arc<Mutex<Connection>>,
-    actions_queue: &Arc<Mutex<queue::Queue<CommAction>>>,
     action: CommAction,
-) -> Result<()> {
+    conn: &Arc<Mutex<C>>,
+) -> Result<Vec<CommAction>>
+where
+    C: connection::ConnSendMessage + connection::ConnSendTicket,
+{
     let mut new_actions: Vec<CommAction> = vec![];
 
     match action {
@@ -317,11 +318,7 @@ pub async fn perform_action(
         _ => {}
     }
 
-    if !new_actions.is_empty() {
-        actions_queue.lock().await.push_multiple(new_actions);
-    }
-
-    Ok(())
+    Ok(new_actions)
 }
 
 pub fn get_target_locked_path(target: PathBuf) -> PathBuf {
@@ -357,13 +354,16 @@ async fn on_target_has_changed(
     Ok(vec![])
 }
 
-async fn on_request_target(
-    conn: &Arc<Mutex<Connection>>,
+async fn on_request_target<C>(
+    conn: &Arc<Mutex<C>>,
     target_groups: &[target::TargetGroup],
     from_node_id: String,
     target_name: String,
     relative_path: String,
-) -> Result<Vec<CommAction>> {
+) -> Result<Vec<CommAction>>
+where
+    C: connection::ConnSendTicket,
+{
     let target_group = target::get_push_group_with_name(target_groups, &target_name);
     if let Some(target) = target_group {
         let ticket_id = conn.lock().await.get_file_ticket(target.path).await?;
@@ -380,15 +380,18 @@ async fn on_request_target(
     Ok(vec![])
 }
 
-async fn on_download_target(
-    conn: &Arc<Mutex<Connection>>,
+async fn on_download_target<C>(
+    conn: &Arc<Mutex<C>>,
     target_groups: &[target::TargetGroup],
     nodes: &[target::NodeData],
     from_node_id: String,
     target_name: String,
     relative_path: String,
     ticket_id: String,
-) -> Result<()> {
+) -> Result<()>
+where
+    C: connection::ConnSendTicket,
+{
     let target_group = target::get_pull_group_with_name(target_groups, &target_name);
     if let Some(target) = target_group {
         // check if the node id is on the pull list
