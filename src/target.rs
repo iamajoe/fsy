@@ -1,4 +1,9 @@
+use std::path::Path;
+
 use serde::{Deserialize, Serialize};
+use anyhow::Result;
+
+use crate::{action, path_watcher};
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct NodeData {
@@ -110,23 +115,6 @@ pub fn get_push_groups_with_path(groups: &[TargetGroup], file_path: &str) -> Vec
         .collect()
 }
 
-pub fn get_pull_group_paths(groups: &[TargetGroup]) -> Vec<String> {
-    groups
-        .iter()
-        .filter_map(|item| {
-            let found = item
-                .targets
-                .iter()
-                .any(|t| t.mode == TargetMode::Pull || t.mode == TargetMode::PushPull);
-            if !found {
-                return None;
-            }
-
-            Some(item.path.clone())
-        })
-        .collect()
-}
-
 pub fn get_pull_group_with_name(groups: &[TargetGroup], name: &str) -> Option<TargetGroup> {
     groups
         .iter()
@@ -152,3 +140,51 @@ pub fn group_has_node_id(group: &TargetGroup, nodes: &[NodeData], node_id: &str)
         group.targets.iter().any(|target| target.node_name == node.name)
     })
 }
+
+pub async fn process_changed_targets(
+    nodes: &[NodeData],
+    target_groups: &[TargetGroup],
+    changed_targets: Option<Vec<path_watcher::ChangedTarget>>,
+) -> Result<Vec<action::CommAction>> {
+    let mut actions: Vec<action::CommAction> = vec![];
+
+    // check if watcher has changed targets events
+    if let Some(targets) = changed_targets {
+        println!("[event_check][watcher] targets changed: {}", targets.len());
+
+        // retrieve nodes of the affected target groups and map to the action
+        for changed_target in targets {
+            // check if we have a lock in place, if we have, there is an update going,
+            // we don't want to create a change upon that
+            let file_path = Path::new(&changed_target.base_path).join(&changed_target.relative_path);
+            let file_path = action::get_target_locked_path(file_path);
+            if action::is_target_locked(&file_path) {
+                continue;
+            }
+
+            let groups =
+                get_push_groups_with_path(target_groups, &changed_target.base_path);
+            for group in groups {
+                let target_actions: Vec<action::CommAction> = group
+                    .get_node_ids(
+                        nodes,
+                        &[TargetMode::Push, TargetMode::PushPull],
+                    )
+                    .iter()
+                    .map(|node_id| {
+                        action::CommAction::TargetHasChanged(
+                            node_id.to_owned(),
+                            group.name.clone(),
+                            changed_target.relative_path.clone(),
+                        )
+                        .to_send_message()
+                    })
+                    .collect();
+                actions.extend(target_actions);
+            }
+        }
+    }
+
+    Ok(actions)
+}
+
