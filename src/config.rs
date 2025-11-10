@@ -1,26 +1,75 @@
-use crate:: target::{NodeData, TargetGroup};
 use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
 use iroh::SecretKey;
+use std::fmt;
 use std::{env, ffi::OsString, fs, path::Path};
 
-const CONFIG_FILE_NAME: &str = "fsy/config.toml";
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub enum TargetMode {
+    #[serde(rename = "push")]
+    Push,
+    #[serde(rename = "push-pull")]
+    PushPull,
+    #[serde(rename = "pull")]
+    Pull,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub enum TargetKind {
+    #[serde(rename = "local")]
+    Local,
+    #[serde(rename = "p2p")]
+    P2p,
+    #[serde(rename = "dropbox")]
+    Dropbox,
+    #[serde(rename = "s3")]
+    S3,
+}
+
+impl fmt::Display for TargetKind {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            TargetKind::Local => write!(f, "local"),
+            TargetKind::P2p => write!(f, "p2p"),
+            TargetKind::Dropbox => write!(f, "dropbox"),
+            TargetKind::S3 => write!(f, "s3"),
+        }
+    }
+}
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct LocalNodeData {
-    pub public_key: String,
-    pub secret_key: [u8; 32],
-    pub push_debounce_millisecs: u64,
-    pub loop_debounce_millisecs: u64,
+pub struct Target {
+    pub enable: bool,
+    pub id: String,
+    pub mode: TargetMode,
+    pub kind: TargetKind,
+    pub src: String,
+    pub ignore_nested_files: Option<Vec<String>>,
+
+    // timing variables
+    pub change_debounce_sec: Option<u64>,
+    pub schedule_cron: Option<String>,
+
+    // module data key
+    pub data_key: Option<String>, // s3, dropbox
+    pub data_secret: Option<String>, // s3
+    pub data_node_id: Option<String>, // p2p
+    pub data_src_id: Option<String>, // p2p
+    pub data_dest_id: Option<String>, // p2p
+    pub data_dest: Option<String>, // dropbox, local
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Config {
     #[serde(skip)]
     pub config_path: OsString,
-    pub local: LocalNodeData,
-    pub nodes: Vec<NodeData>,
-    pub target_groups: Vec<TargetGroup>,
+
+    // key related data
+    pub p2p_public_key: String,
+    pub p2p_secret_key: [u8; 32],
+
+    // targets data
+    pub targets: Vec<Target>,
 }
 
 impl Default for Config {
@@ -28,15 +77,10 @@ impl Default for Config {
         let raw_secret_key = generate_node_secret_key();
 
         Self {
-            config_path: ".config".into(),
-            local: LocalNodeData {
-                public_key: raw_secret_key.public().to_string(),
-                secret_key: raw_secret_key.secret().to_bytes(),
-                push_debounce_millisecs: 500,
-                loop_debounce_millisecs: 250,
-            },
-            nodes: vec![],
-            target_groups: vec![],
+            config_path: "".into(),
+            p2p_public_key: raw_secret_key.public().to_string(),
+            p2p_secret_key: raw_secret_key.secret().to_bytes(),
+            targets: vec![],
         }
     }
 }
@@ -47,10 +91,8 @@ impl Config {
 
         // create the file if not there
         if !fs::exists(&config_path).unwrap() {
-            let s = Self {
-                config_path,
-                ..Default::default()
-            };
+            let mut s: Config = Default::default();
+            s.config_path = config_path; 
 
             return save_config(s);
         }
@@ -72,8 +114,8 @@ impl Config {
             //       only check if config exists because we are already generating
             //       when it is a new config file
             let raw_secret_key = generate_node_secret_key();
-            parsed.local.public_key = raw_secret_key.public().to_string();
-            parsed.local.secret_key = raw_secret_key.secret().to_bytes();
+            parsed.p2p_public_key = raw_secret_key.public().to_string();
+            parsed.p2p_secret_key = raw_secret_key.secret().to_bytes();
         }
 
         // make sure the configuration is valid
@@ -84,25 +126,18 @@ impl Config {
 }
 
 fn validate_config(conf: &Config) -> Result<()> {
-    // node names need to be unique
-    for node_a in &conf.nodes {
-        for node_b in &conf.nodes {
-            if node_a.id == node_b.id || node_a.name != node_b.name {
+    // target ids need to be unique
+    for (i, target_a) in conf.targets.iter().enumerate() {
+        for (c, target_b) in conf.targets.iter().enumerate() {
+            if i == c {
                 continue;
             }
 
-            bail!("node names need to be unique");
-        }
-    }
-
-    // target names need to be unique
-    for target_a in &conf.target_groups {
-        for target_b in &conf.target_groups {
-            if target_a.path == target_b.path || target_a.name != target_b.name {
+            if target_a.id != target_b.id {
                 continue;
             }
 
-            bail!("target group names need to be unique");
+            bail!("target ids need to be unique");
         }
     }
 
@@ -141,14 +176,14 @@ fn get_config_path(user_relative_path: &str) -> Result<OsString> {
     // being empty we want to create our own config
     let mut user_path = user_relative_path;
     if user_path.is_empty() {
-        user_path = ".config";
+        user_path = ".config/fsy";
     }
 
     match std::env::var_os("HOME") {
         // handle home case
         Some(p) => Ok(Path::new(&p)
             .join(user_path)
-            .join(CONFIG_FILE_NAME)
+            .join("config.toml")
             .into_os_string()),
 
         // handle case where there isn't an home
@@ -158,7 +193,7 @@ fn get_config_path(user_relative_path: &str) -> Result<OsString> {
                 .parent()
                 .unwrap()
                 .join(user_path)
-                .join(CONFIG_FILE_NAME)
+                .join("config.toml")
                 .into_os_string();
 
             Ok(res)
@@ -166,7 +201,7 @@ fn get_config_path(user_relative_path: &str) -> Result<OsString> {
     }
 }
 
-pub fn generate_node_secret_key() -> SecretKey {
+fn generate_node_secret_key() -> SecretKey {
     SecretKey::generate(rand::rngs::OsRng)
 }
 

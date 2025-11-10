@@ -1,48 +1,44 @@
 [global]
-name="{{name}}"
-node_id="{{node_id}}"
-key="{{key}}"
+p2p_public_key = "{{key}}"
+p2p_secret_key = []
 
-[[trustees]]
-name="donkey"
-node_id="CHANGE"
-key="{{key}}"
+[[targets]]
+enable = false
+id = "dotfiles_backup_cold"
+mode = "push"
+kind = "local"
+src = "~/.config"
+change_debounce_sec = 0.5
+data_dest = "~/backup/config"
 
-[[trustees]]
-name="nas"
-node_id="CHANGE"
-key="{{key}}"
+[[targets]]
+enable = false
+id = "dotfiles_sync"
+mode = "push-pull"
+kind = "p2p"
+src = "~/.config/**/*"
+ignore_nested_files = ["**/.git"]
+change_debounce_sec = 5
+data_node_id = "{{node_id}}"
+data_src_id = "dofiles_sync_remote"
+data_dest_id = "dofiles_sync_remote"
 
-[[trustees]]
-name="nas"
-node_id="CHANGE"
-key="{{key}}"
+[[targets]]
+enable = false
+id = "dotfiles_backup_dropbox"
+mode = "push"
+kind = "dropbox"
+src = "~/.config"
+change_debounce_sec = 10
+data_key = "{{dropbox_key}}"
+data_dest = "/backup_config"
 
-[[trustees]]
-name="dev"
-node_id="CHANGE"
-key="{{key}}"
-
-[[file_syncs]]
-name="dotfiles"
-path="~/.config"
-[[file_syncs.target]]
-mode="push-pull"
-trustee="dev"
-[[file_syncs.target]]
-mode="push"
-trustee="donkey"
-[[file_syncs.target]]
-mode="push"
-trustee="nas"
-
-[[file_syncs]]
-name="work_laptop"
-path="~/work"
-[[file_syncs.target]]
-mode="push"
-trustee="donkey"
-[[file_syncs.target]]
-mode="push"
-trustee="nas"
-
+[[targets]]
+enable = false
+id = "dotfiles_backup_s3"
+mode = "pull"
+kind = "s3"
+src = "~/.config"
+schedule_cron = "0 0 1 * *"
+data_key = "{{s3_key}}"
+data_secret = "{{s3_secret}}"

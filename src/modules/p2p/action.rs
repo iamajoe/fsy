@@ -5,8 +5,6 @@ use std::io::prelude::*;
 use std::path::{Path, PathBuf};
 use std::{fmt, fs, thread, time};
 
-use crate::{connection, target};
-
 #[derive(Debug, PartialEq)]
 enum ActionNamespace {
     Unknown,

@@ -10,10 +10,10 @@ use std::{
     sync::mpsc::{self, Receiver},
 };
 
-#[derive(Clone)]
 pub struct ChangedTarget {
     pub base_path: String,
     pub relative_path: String,
+    pub full_path: String,
 }
 
 pub struct PathWatcher {
@@ -25,6 +25,8 @@ pub struct PathWatcher {
 impl PathWatcher {
     pub fn new(push_paths: Vec<String>, push_debounce_millisecs: u64) -> Result<Self> {
         let (watcher_tx, watcher_rx) = mpsc::channel();
+
+        // TODO: check if source is valid, if is directory...
 
         // initialize the watcher
         let watcher = new_debouncer(
@@ -41,30 +43,26 @@ impl PathWatcher {
             },
         )?;
 
+        // TODO: handle the globs to listen to
+
         // construct the final struct
-        let s = Self {
+        let mut s = Self {
             watch_paths: push_paths,
             file_watcher: watcher,
             file_watcher_rx: watcher_rx,
         };
 
+        // watch files
+        s.set_watcher_files()?;
+
         Ok(s)
     }
 
-    pub fn start(&mut self) -> Result<()> {
-        // listen to file changes
-        self.set_watcher_files()
-    }
-
-    pub fn get_changed_targets(&self) -> Option<Vec<ChangedTarget>> {
+    pub fn get_changed_target(&self) -> Option<ChangedTarget> {
         let changed_path = self.file_watcher_rx.try_recv();
         if let Ok(Some(changed_path)) = changed_path {
-            let targets = get_push_targets_with_file(&self.watch_paths, changed_path.to_str()?);
-            if targets.is_empty() {
-                return None;
-            }
-
-            return Some(targets);
+            let changed_path = changed_path.to_str().unwrap();
+            return get_changed_target_from_path(&self.watch_paths, changed_path);
         }
 
         None
@@ -99,27 +97,30 @@ impl PathWatcher {
     }
 }
 
-fn get_push_targets_with_file(push_paths: &[String], file_path: &str) -> Vec<ChangedTarget> {
-    push_paths.iter().filter_map(|base_path| {
+fn get_changed_target_from_path(push_paths: &[String], file_path: &str) -> Option<ChangedTarget> {
+    push_paths.iter().find_map(|base_path| {
         if !file_path.contains(base_path) {
             return None;
         }
 
+        // TODO: with glob, this might need to change
+
         // this means the file is the same
         // TODO: need to actually test this
         if base_path == file_path {
-            return Some(ChangedTarget{
+            return Some(ChangedTarget {
                 base_path: base_path.to_owned(),
                 relative_path: "".to_owned(),
+                full_path: file_path.to_owned(),
             });
         }
 
         // being a directory, we know we have a relative path
         let relative_path = file_path.replace(base_path, "");
-        Some(ChangedTarget{
+        Some(ChangedTarget {
             base_path: base_path.to_owned(),
             relative_path,
+            full_path: file_path.to_owned(),
         })
     })
-    .collect()
 }
