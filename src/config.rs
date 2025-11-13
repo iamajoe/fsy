@@ -63,6 +63,8 @@ pub struct Target {
 pub struct Config {
     #[serde(skip)]
     pub config_path: OsString,
+    #[serde(skip)]
+    pub db_path: OsString,
 
     // key related data
     pub p2p_public_key: String,
@@ -72,27 +74,21 @@ pub struct Config {
     pub targets: Vec<Target>,
 }
 
-impl Default for Config {
-    fn default() -> Config {
-        let raw_secret_key = generate_node_secret_key();
-
-        Self {
-            config_path: "".into(),
-            p2p_public_key: raw_secret_key.public().to_string(),
-            p2p_secret_key: raw_secret_key.secret().to_bytes(),
-            targets: vec![],
-        }
-    }
-}
-
 impl Config {
-    pub fn new(user_relative_path: &str) -> Result<Self> {
-        let config_path = get_config_path(user_relative_path).unwrap();
+    pub fn new(dir_path: &str) -> Result<Self> {
+        let config_path = get_config_path(dir_path, "config.toml".to_owned())?;
+        let db_path = get_config_path(dir_path, "db.db3".to_owned())?;
 
         // create the file if not there
         if !fs::exists(&config_path).unwrap() {
-            let mut s: Config = Default::default();
-            s.config_path = config_path; 
+            let raw_secret_key = generate_node_secret_key();
+            let s = Self{
+                config_path,
+                db_path,
+                p2p_public_key: raw_secret_key.public().to_string(),
+                p2p_secret_key: raw_secret_key.secret().to_bytes(),
+                targets: vec![],
+            };
 
             return save_config(s);
         }
@@ -100,8 +96,10 @@ impl Config {
         // read the file now
         let content = fs::read_to_string(&config_path).unwrap();
         let mut parsed: Config = toml::from_str(&content).unwrap();
+
         // update with the path since we are not serializing it into the file
         parsed.config_path = config_path;
+        parsed.db_path = db_path;
 
         // NOTE: we regenerate then so we can use for testing for example
         //       only check if config exists because we are already generating
@@ -172,7 +170,7 @@ fn save_config(conf: Config) -> Result<Config> {
     Ok(conf)
 }
 
-fn get_config_path(user_relative_path: &str) -> Result<OsString> {
+fn get_config_path(user_relative_path: &str, file_name: String) -> Result<OsString> {
     // being empty we want to create our own config
     let mut user_path = user_relative_path;
     if user_path.is_empty() {
@@ -183,7 +181,7 @@ fn get_config_path(user_relative_path: &str) -> Result<OsString> {
         // handle home case
         Some(p) => Ok(Path::new(&p)
             .join(user_path)
-            .join("config.toml")
+            .join(file_name)
             .into_os_string()),
 
         // handle case where there isn't an home
@@ -193,7 +191,7 @@ fn get_config_path(user_relative_path: &str) -> Result<OsString> {
                 .parent()
                 .unwrap()
                 .join(user_path)
-                .join("config.toml")
+                .join(file_name)
                 .into_os_string();
 
             Ok(res)
@@ -212,7 +210,7 @@ mod tests {
     #[test]
     fn test_get_config_path() -> Result<()> {
         let user_relative_path = "test_user_relative_path";
-        let res = get_config_path(user_relative_path)?;
+        let res = get_config_path(user_relative_path, "config.toml".to_owned())?;
         let res_str = res.into_string().unwrap();
 
         assert!(&res_str.contains(user_relative_path));

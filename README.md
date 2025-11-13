@@ -10,7 +10,7 @@
 
 ### Run
 
-1. `cargo run`
+1. `cargo run [<config_dir_path>]`
 
 ### Configuration
 

@@ -16,7 +16,13 @@ const CHANNEL_BUFFER_SIZE: usize = 1000;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let config = config::Config::new("").unwrap();
+    let args: Vec<String> = std::env::args().collect();
+    let mut config_dir_path = "".to_owned();
+    if args.len() >= 2 {
+        config_dir_path = args[1].clone();
+    }
+
+    let config = config::Config::new(&config_dir_path).unwrap();
 
     // NOTE: controller if the app is running or not
     let (is_running_tx, is_running_rx) = watch::channel(true);
