@@ -1,6 +1,7 @@
 mod config;
 mod modules;
 mod path_watcher;
+mod repository;
 
 use std::time::Duration;
 
@@ -67,7 +68,7 @@ async fn main() -> Result<()> {
                 // check all watcher targets
                 for (target_id, watcher) in &watchers {
                     // check for changed targets
-                    if let Some(changed_target) = watcher.get_changed_target() {
+                    if let Ok(Some(changed_target)) = watcher.get_changed_target() {
                         let target = config.targets.iter().find(|t| *t.id == *target_id).unwrap();
                         match target.kind {
                             // handle the local
@@ -78,6 +79,7 @@ async fn main() -> Result<()> {
                                         changed_target.full_path,
                                         changed_target.relative_path,
                                         dest.clone(),
+                                        changed_target.timestamp,
                                     ));
                                 }
                                 _ => {

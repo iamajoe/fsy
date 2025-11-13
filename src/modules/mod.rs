@@ -1,10 +1,11 @@
 mod local;
 
 use anyhow::Result;
+use chrono::{DateTime, Utc};
 
 pub enum TargetKind {
-    // src_full, src_relative, dest
-    Local(String, String, String),
+    // src_full, src_relative, dest, timestamp
+    Local(String, String, String, DateTime<Utc>),
 }
 
 pub struct TargetKindModules {
@@ -18,7 +19,9 @@ impl TargetKindModules {
 
     pub async fn send_target(&self, kind: TargetKind) -> Result<()> {
         match kind {
-            TargetKind::Local(src_full, src_relative, dest) => local::send_file(&src_full, &src_relative, &dest),
+            TargetKind::Local(src_full, src_relative, dest, _timestamp) => {
+                local::send_file(&src_full, &src_relative, &dest)
+            }
         }
     }
 

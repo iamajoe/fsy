@@ -1,10 +1,11 @@
 use anyhow::Result;
 
+use chrono::{DateTime, Utc};
 use notify::RecommendedWatcher;
 use notify_debouncer_mini::{DebounceEventResult, DebouncedEventKind, Debouncer, new_debouncer};
 
 use std::path::PathBuf;
-use std::time::Duration;
+use std::time::{Duration, UNIX_EPOCH};
 use std::{
     fs,
     sync::mpsc::{self, Receiver},
@@ -14,6 +15,7 @@ pub struct ChangedTarget {
     pub base_path: String,
     pub relative_path: String,
     pub full_path: String,
+    pub timestamp: DateTime<Utc>,
 }
 
 pub struct PathWatcher {
@@ -58,14 +60,14 @@ impl PathWatcher {
         Ok(s)
     }
 
-    pub fn get_changed_target(&self) -> Option<ChangedTarget> {
+    pub fn get_changed_target(&self) -> Result<Option<ChangedTarget>> {
         let changed_path = self.file_watcher_rx.try_recv();
         if let Ok(Some(changed_path)) = changed_path {
             let changed_path = changed_path.to_str().unwrap();
             return get_changed_target_from_path(&self.watch_paths, changed_path);
         }
 
-        None
+        Ok(None)
     }
 
     // close handles the unsetup of the whole watcher
@@ -97,30 +99,40 @@ impl PathWatcher {
     }
 }
 
-fn get_changed_target_from_path(push_paths: &[String], file_path: &str) -> Option<ChangedTarget> {
-    push_paths.iter().find_map(|base_path| {
+fn get_changed_target_from_path(
+    push_paths: &[String],
+    file_path: &str,
+) -> Result<Option<ChangedTarget>> {
+    // get the modified timestamp in UTC
+    let metadata = fs::metadata(file_path)?;
+    let modified_time: DateTime<Utc> = metadata.modified()?.into();
+
+    let result = push_paths.iter().find_map(|base_path| {
         if !file_path.contains(base_path) {
             return None;
         }
+
+        let mut changed = ChangedTarget {
+            base_path: base_path.to_owned(),
+            relative_path: "".to_owned(),
+            full_path: file_path.to_owned(),
+            timestamp: modified_time,
+        };
 
         // TODO: with glob, this might need to change
 
         // this means the file is the same
         // TODO: need to actually test this
         if base_path == file_path {
-            return Some(ChangedTarget {
-                base_path: base_path.to_owned(),
-                relative_path: "".to_owned(),
-                full_path: file_path.to_owned(),
-            });
+            return Some(changed);
         }
 
         // being a directory, we know we have a relative path
         let relative_path = file_path.replace(base_path, "");
-        Some(ChangedTarget {
-            base_path: base_path.to_owned(),
-            relative_path,
-            full_path: file_path.to_owned(),
-        })
-    })
+        changed.relative_path = relative_path;
+
+        Some(changed)
+    });
+
+    Ok(result)
 }
