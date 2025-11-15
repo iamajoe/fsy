@@ -1,16 +1,16 @@
 mod config;
+mod file_ledger_repository;
 mod modules;
 mod path_watcher;
-mod repository;
 
 use std::time::Duration;
 
-use anyhow::{Result, bail};
+use anyhow::{Result, anyhow};
 use chrono::Utc;
 use tokio::sync::{mpsc, watch};
 use tokio::time::sleep;
 
-use self::config::TargetMode;
+use self::config::{Target, TargetMode};
 use self::path_watcher::PathWatcher;
 
 const CHANNEL_BUFFER_SIZE: usize = 1000;
@@ -24,6 +24,9 @@ async fn main() -> Result<()> {
     }
 
     let config = config::Config::new(&config_dir_path).unwrap();
+    let repo =
+        file_ledger_repository::FileLedgerRepository::new(config.db_path.into_string().unwrap());
+    repo.migrate().unwrap();
 
     // NOTE: controller if the app is running or not
     let (is_running_tx, is_running_rx) = watch::channel(true);
@@ -33,6 +36,7 @@ async fn main() -> Result<()> {
 
     // loop watcher
     let watcher_is_running_rx = is_running_rx.clone();
+    let watcher_repo = repo.clone();
     tokio::spawn(async move {
         println!("[watcher] starting");
         // create the watchers
@@ -63,35 +67,14 @@ async fn main() -> Result<()> {
                     break;
                 }
 
-                let mut target_kinds: Vec<modules::TargetKind> = vec![];
-
                 // check all watcher targets
-                for (target_id, watcher) in &watchers {
-                    // check for changed targets
-                    if let Ok(Some(changed_target)) = watcher.get_changed_target() {
-                        let target = config.targets.iter().find(|t| *t.id == *target_id).unwrap();
-                        match target.kind {
-                            // handle the local
-                            config::TargetKind::Local => match &target.data_dest {
-                                Some(dest) => {
-                                    println!("[watcher][changed_target][local] sending target");
-                                    target_kinds.push(modules::TargetKind::Local(
-                                        changed_target.full_path,
-                                        changed_target.relative_path,
-                                        dest.clone(),
-                                        changed_target.timestamp,
-                                    ));
-                                }
-                                _ => {
-                                    bail!("target \"{}\" does not have the required parameters", &target.id)
-                                }
-                            },
-                            _ => {
-                                println!("module not implemented: {}", target.kind);
-                            }
-                        }
-                    }
-                }
+                let target_kinds: Vec<modules::TargetKind> = watchers
+                    .iter()
+                    .filter_map(|(target_id, watcher)| {
+                        get_watcher_target_kind(watcher, &watcher_repo, &config.targets, target_id)
+                            .unwrap()
+                    })
+                    .collect();
 
                 // cache the target kind to be handled
                 for target_kind in target_kinds {
@@ -109,16 +92,15 @@ async fn main() -> Result<()> {
         for (_, mut watcher) in watchers {
             watcher.close().unwrap();
         }
-
-        Ok(())
     });
 
     // loop target kind handler
     let target_is_running_rx = is_running_rx.clone();
+    let target_repo = repo.clone();
     tokio::spawn(async move {
         println!("[target] looping");
 
-        let kind_modules = modules::TargetKindModules::new();
+        let kind_modules = modules::TargetKindModules::new(target_repo);
 
         loop {
             if !*target_is_running_rx.borrow() {
@@ -155,4 +137,53 @@ async fn main() -> Result<()> {
     is_running_tx.send(false).unwrap();
 
     Ok(())
+}
+
+fn get_watcher_target_kind(
+    watcher: &PathWatcher,
+    watcher_repo: &file_ledger_repository::FileLedgerRepository,
+    targets: &[Target],
+    target_id: &str,
+) -> Result<Option<modules::TargetKind>> {
+    // check for changed targets
+    if let Ok(Some(changed_target)) = watcher.get_changed_target() {
+        // file is locked so any changes should be disregarded
+        // TODO: remove after testing
+        println!("CHECKING LOCKED FILE: {}", &changed_target.full_path);
+        let is_locked = watcher_repo
+            .is_file_locked(&changed_target.full_path)
+            .unwrap();
+        if is_locked {
+            return Ok(None);
+        }
+
+        let target = targets.iter().find(|t| *t.id == *target_id).unwrap();
+
+        match target.kind {
+            // handle the local
+            config::TargetKind::Local => match &target.data_dest {
+                Some(dest) => {
+                    println!("[watcher][changed_target][local] sending target");
+                    return Ok(Some(modules::TargetKind::Local(
+                        target_id.to_owned(),
+                        changed_target.full_path,
+                        changed_target.relative_path,
+                        dest.clone(),
+                        changed_target.timestamp,
+                    )));
+                }
+                _ => {
+                    return Err(anyhow!(format!(
+                        "target \"{}\" does not have the required parameters",
+                        &target.id
+                    )));
+                }
+            },
+            _ => {
+                println!("module not implemented: {}", target.kind);
+            }
+        }
+    }
+
+    Ok(None)
 }

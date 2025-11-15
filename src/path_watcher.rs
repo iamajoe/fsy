@@ -5,14 +5,13 @@ use notify::RecommendedWatcher;
 use notify_debouncer_mini::{DebounceEventResult, DebouncedEventKind, Debouncer, new_debouncer};
 
 use std::path::PathBuf;
-use std::time::{Duration, UNIX_EPOCH};
+use std::time::Duration;
 use std::{
     fs,
     sync::mpsc::{self, Receiver},
 };
 
 pub struct ChangedTarget {
-    pub base_path: String,
     pub relative_path: String,
     pub full_path: String,
     pub timestamp: DateTime<Utc>,
@@ -113,7 +112,6 @@ fn get_changed_target_from_path(
         }
 
         let mut changed = ChangedTarget {
-            base_path: base_path.to_owned(),
             relative_path: "".to_owned(),
             full_path: file_path.to_owned(),
             timestamp: modified_time,
