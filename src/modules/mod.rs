@@ -4,6 +4,8 @@ use std::path::Path;
 
 use anyhow::Result;
 use chrono::{DateTime, Utc};
+use std::time::Duration;
+use tokio::time::sleep;
 
 use crate::file_ledger_repository::FileLedgerRepository;
 
@@ -53,9 +55,6 @@ impl TargetKindModules {
 
                 let full_dest = get_full_dest_path(&src_relative, &dest).unwrap();
 
-                // TODO: remove after testing
-                println!("LOCKING FILE: {full_dest}");
-
                 // lock file so that the watcher doesn't listen to changes
                 self.file_ledger_repo.lock_file(&full_dest).unwrap();
 
@@ -67,9 +66,11 @@ impl TargetKindModules {
                     .save_pull_file(&id, &src_relative, &timestamp)
                     .unwrap();
 
+                // need to debounce as per the watcher debounce that can
+                // come through still
+                sleep(Duration::from_millis(1000)).await;
+
                 // we can unlock the file now
-                // TODO: remove after testing
-                println!("UNLOCKING FILE: {full_dest}");
                 self.file_ledger_repo.unlock_file(&full_dest).unwrap();
 
                 Ok(())

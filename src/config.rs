@@ -77,7 +77,7 @@ pub struct Config {
 impl Config {
     pub fn new(dir_path: &str) -> Result<Self> {
         let config_path = get_config_path(dir_path, "config.toml".to_owned())?;
-        let db_path = get_config_path(dir_path, "db.db3".to_owned())?;
+        let db_path = get_config_path(dir_path, "db.db".to_owned())?;
 
         // create the file if not there
         if !fs::exists(&config_path).unwrap() {

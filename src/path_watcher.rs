@@ -38,6 +38,7 @@ impl PathWatcher {
                         return;
                     }
 
+                    println!("[path_watcher][file_changed] {}", &e.path.to_str().unwrap());
                     watcher_tx.send(Some(e.path.clone())).unwrap();
                 }),
                 Err(e) => println!("-> watcher error {e}"),

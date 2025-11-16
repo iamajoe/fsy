@@ -22,6 +22,7 @@ async fn main() -> Result<()> {
     if args.len() >= 2 {
         config_dir_path = args[1].clone();
     }
+    println!("running config dir: {config_dir_path}");
 
     let config = config::Config::new(&config_dir_path).unwrap();
     let repo =
@@ -71,8 +72,7 @@ async fn main() -> Result<()> {
                 let target_kinds: Vec<modules::TargetKind> = watchers
                     .iter()
                     .filter_map(|(target_id, watcher)| {
-                        get_watcher_target_kind(watcher, &watcher_repo, &config.targets, target_id)
-                            .unwrap()
+                        get_watcher_target_kind(watcher, &watcher_repo, &config.targets, target_id).unwrap()
                     })
                     .collect();
 
@@ -120,6 +120,9 @@ async fn main() -> Result<()> {
                 let time_spent = Utc::now().timestamp_millis() - start;
                 println!("[target][send] end ({time_spent}ms)");
             }
+
+            // TODO: could be on a config at least
+            sleep(Duration::from_millis(1000)).await;
         }
 
         // close the modules
@@ -148,8 +151,6 @@ fn get_watcher_target_kind(
     // check for changed targets
     if let Ok(Some(changed_target)) = watcher.get_changed_target() {
         // file is locked so any changes should be disregarded
-        // TODO: remove after testing
-        println!("CHECKING LOCKED FILE: {}", &changed_target.full_path);
         let is_locked = watcher_repo
             .is_file_locked(&changed_target.full_path)
             .unwrap();
