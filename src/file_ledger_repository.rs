@@ -22,17 +22,18 @@ impl FileLedgerRepository {
             CREATE SEQUENCE IF NOT EXISTS file_pulls_serial START WITH 1;
             CREATE TABLE IF NOT EXISTS file_pulls (
                 id INTEGER PRIMARY KEY,
-                target_id TEXT, 
-                file_path TEXT, 
-                timestamp TIMESTAMP_MS,
+                target_id TEXT NOT NULL,
+                file_path TEXT NOT NULL,
+                timestamp TIMESTAMP_MS NOT NULL,
                 UNIQUE(target_id, file_path)
             );
 
             CREATE SEQUENCE IF NOT EXISTS file_push_locks_serial START WITH 1;
             CREATE TABLE IF NOT EXISTS file_push_locks (
                 id INTEGER PRIMARY KEY,
-                file_path TEXT,
-                updated_at TIMESTAMP_MS,
+                file_path TEXT NOT NULL,
+                count INTEGER NOT NULL,
+                updated_at TIMESTAMP_MS NOT NULL,
                 UNIQUE(file_path)
             );
         ",
@@ -51,12 +52,14 @@ impl FileLedgerRepository {
 
         conn.execute(
             "
-            INSERT INTO file_push_locks (id, file_path, updated_at) 
-            VALUES (nextval('file_push_locks_serial'), ?1, ?2) 
+            INSERT INTO file_push_locks (id, file_path, updated_at, count) 
+            VALUES (nextval('file_push_locks_serial'), ?1, ?2, ?3) 
             ON CONFLICT (file_path) DO UPDATE 
-            SET updated_at = EXCLUDED.updated_at
+            SET 
+              updated_at = EXCLUDED.updated_at,
+              count = file_push_locks.count + EXCLUDED.count
             ",
-            params![&file_path, &timestamp],
+            params![&file_path, &timestamp, 1],
         )?;
 
         conn.close().map_err(|(_, err)| anyhow!(err))?;
@@ -66,10 +69,20 @@ impl FileLedgerRepository {
 
     pub fn unlock_file(&self, file_path: &str) -> Result<()> {
         let conn = Connection::open(&self.db_file_path)?;
+
+        // remove on the count
         conn.execute(
-            "DELETE FROM file_push_locks WHERE file_path = ?",
+            "
+            UPDATE file_push_locks
+            SET count = count - 1
+            WHERE file_path = ?
+            ",
             params![&file_path],
         )?;
+
+        // remove all counts 0, no longer required on the database
+        conn.execute("DELETE FROM file_push_locks WHERE count <= 0", params![])?;
+
         conn.close().map_err(|(_, err)| anyhow!(err))?;
         Ok(())
     }
@@ -78,7 +91,7 @@ impl FileLedgerRepository {
         // TODO: should count instead
         let conn = Connection::open(&self.db_file_path)?;
 
-        let mut stmt = conn.prepare("SELECT id FROM file_push_locks WHERE file_path=?")?;
+        let mut stmt = conn.prepare("SELECT id FROM file_push_locks WHERE file_path=? AND count > 0")?;
         let found_iter = stmt.query_map([file_path], |_row| Ok(true))?;
         let count = found_iter.count();
 
