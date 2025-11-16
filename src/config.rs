@@ -1,6 +1,6 @@
 use anyhow::{Result, bail};
-use serde::{Deserialize, Serialize};
 use iroh::SecretKey;
+use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::{env, ffi::OsString, fs, path::Path};
 
@@ -51,12 +51,12 @@ pub struct Target {
     pub schedule_cron: Option<String>,
 
     // module data key
-    pub data_key: Option<String>, // s3, dropbox
-    pub data_secret: Option<String>, // s3
+    pub data_key: Option<String>,     // s3, dropbox
+    pub data_secret: Option<String>,  // s3
     pub data_node_id: Option<String>, // p2p
-    pub data_src_id: Option<String>, // p2p
+    pub data_src_id: Option<String>,  // p2p
     pub data_dest_id: Option<String>, // p2p
-    pub data_dest: Option<String>, // dropbox, local
+    pub data_dest: Option<String>,    // dropbox, local
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -65,6 +65,8 @@ pub struct Config {
     pub config_path: OsString,
     #[serde(skip)]
     pub db_path: OsString,
+    #[serde(skip)]
+    pub loop_sleep_time_ms: u64,
 
     // key related data
     pub p2p_public_key: String,
@@ -82,9 +84,10 @@ impl Config {
         // create the file if not there
         if !fs::exists(&config_path).unwrap() {
             let raw_secret_key = generate_node_secret_key();
-            let s = Self{
+            let s = Self {
                 config_path,
                 db_path,
+                loop_sleep_time_ms: 1000,
                 p2p_public_key: raw_secret_key.public().to_string(),
                 p2p_secret_key: raw_secret_key.secret().to_bytes(),
                 targets: vec![],
@@ -100,6 +103,7 @@ impl Config {
         // update with the path since we are not serializing it into the file
         parsed.config_path = config_path;
         parsed.db_path = db_path;
+        parsed.loop_sleep_time_ms = 1000;
 
         // NOTE: we regenerate then so we can use for testing for example
         //       only check if config exists because we are already generating

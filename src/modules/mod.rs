@@ -17,31 +17,40 @@ pub enum TargetKind {
 pub struct TargetKindModules {
     // TODO: set p2p connection as option
     file_ledger_repo: FileLedgerRepository,
+    is_lock_sync: bool,
 }
 
 impl TargetKindModules {
     pub fn new(file_ledger_repo: FileLedgerRepository) -> Self {
-        Self { file_ledger_repo }
+        Self {
+            file_ledger_repo,
+            is_lock_sync: false,
+        }
     }
 
-    pub async fn send_target(&self, kind: TargetKind) -> Result<()> {
+    pub async fn send_target(
+        &self,
+        kind: TargetKind,
+        wait_unlock_ms: u64,
+    ) -> Result<()> {
         match kind {
             TargetKind::Local(id, src_full, src_relative, dest, timestamp) => {
                 // NOTE: local is a special case where we can send directly
                 return self
-                    .receive_target(TargetKind::Local(
-                        id,
-                        src_full,
-                        src_relative,
-                        dest,
-                        timestamp,
-                    ))
+                    .receive_target(
+                        TargetKind::Local(id, src_full, src_relative, dest, timestamp),
+                        wait_unlock_ms,
+                    )
                     .await;
             }
         }
     }
 
-    pub async fn receive_target(&self, kind: TargetKind) -> Result<()> {
+    pub async fn receive_target(
+        &self,
+        kind: TargetKind,
+        wait_unlock_ms: u64,
+    ) -> Result<()> {
         match kind {
             TargetKind::Local(id, src_full, src_relative, dest, timestamp) => {
                 // no point in updating a file that was already saved or is older
@@ -56,6 +65,7 @@ impl TargetKindModules {
                 let full_dest = get_full_dest_path(&src_relative, &dest).unwrap();
 
                 // lock file so that the watcher doesn't listen to changes
+                println!("[modules][lock file] {full_dest}");
                 self.file_ledger_repo.lock_file(&full_dest).unwrap();
 
                 local::receive_file(&src_full, &full_dest).unwrap();
@@ -68,10 +78,27 @@ impl TargetKindModules {
 
                 // need to debounce as per the watcher debounce that can
                 // come through still
-                sleep(Duration::from_millis(1000)).await;
+                // we don't want to hinder the main system because of it though
+                let file_ledger_repo = self.file_ledger_repo.clone();
 
-                // we can unlock the file now
-                self.file_ledger_repo.unlock_file(&full_dest).unwrap();
+                // the file watcher has a debounce for file change
+                // the locking mechanism exists to prevent that change event
+                // to trigger and loop. as such, we want to make sure we unlock
+                // only after the debounce is done
+                // NOTE: we want to use the lock sync for systems with less cores
+                //       or for example for testing
+                let wait_unlock_ms  = wait_unlock_ms + 500;
+                if self.is_lock_sync {
+                    sleep(Duration::from_millis(wait_unlock_ms)).await;
+                    println!("[modules][unlock file] {full_dest} {wait_unlock_ms}ms");
+                    file_ledger_repo.unlock_file(&full_dest).unwrap();
+                } else {
+                    tokio::spawn(async move {
+                        sleep(Duration::from_millis(wait_unlock_ms)).await;
+                        println!("[modules][unlock file] {full_dest} {wait_unlock_ms}ms");
+                        file_ledger_repo.unlock_file(&full_dest).unwrap();
+                    });
+                }
 
                 Ok(())
             }

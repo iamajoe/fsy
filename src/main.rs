@@ -69,10 +69,11 @@ async fn main() -> Result<()> {
                 }
 
                 // check all watcher targets
-                let target_kinds: Vec<modules::TargetKind> = watchers
+                let target_kinds: Vec<(modules::TargetKind, Option<u64>)> = watchers
                     .iter()
                     .filter_map(|(target_id, watcher)| {
-                        get_watcher_target_kind(watcher, &watcher_repo, &config.targets, target_id).unwrap()
+                        get_watcher_target_kind(watcher, &watcher_repo, &config.targets, target_id)
+                            .unwrap()
                     })
                     .collect();
 
@@ -83,8 +84,7 @@ async fn main() -> Result<()> {
                     }
                 }
 
-                // TODO: could be on a config at least
-                sleep(Duration::from_millis(1000)).await;
+                sleep(Duration::from_millis(config.loop_sleep_time_ms)).await;
             }
         }
 
@@ -108,11 +108,25 @@ async fn main() -> Result<()> {
             }
 
             // handle the targets incoming from other threads
-            while let Ok(target_kind) = target_kinds_rx.try_recv() {
+            while let Ok((target_kind, change_debounce_sec)) = target_kinds_rx.try_recv() {
                 println!("[target][send] processing and sending");
                 let start = Utc::now().timestamp_millis();
 
-                if let Err(e) = kind_modules.send_target(target_kind).await {
+                // the file watcher has a debounce for file change
+                // the locking mechanism exists to prevent that change event
+                // to trigger and loop. as such, we want to make sure we unlock
+                // only after the debounce is done
+                // we use *2 because there are 2 loops that can change this
+                // so... 1 loop time per the 2 loops + the target debounce
+                let mut wait_unlock_millis = config.loop_sleep_time_ms * 2;
+                if let Some(change_debounce_sec) = change_debounce_sec {
+                    wait_unlock_millis += change_debounce_sec * 1000;
+                }
+
+                if let Err(e) = kind_modules
+                    .send_target(target_kind, wait_unlock_millis)
+                    .await
+                {
                     // NOTE: we don't want to mess the process if an error comes in, keep doing it
                     println!("[target][send] error: {e}");
                 }
@@ -121,8 +135,7 @@ async fn main() -> Result<()> {
                 println!("[target][send] end ({time_spent}ms)");
             }
 
-            // TODO: could be on a config at least
-            sleep(Duration::from_millis(1000)).await;
+            sleep(Duration::from_millis(config.loop_sleep_time_ms)).await;
         }
 
         // close the modules
@@ -147,7 +160,7 @@ fn get_watcher_target_kind(
     watcher_repo: &file_ledger_repository::FileLedgerRepository,
     targets: &[Target],
     target_id: &str,
-) -> Result<Option<modules::TargetKind>> {
+) -> Result<Option<(modules::TargetKind, Option<u64>)>> {
     // check for changed targets
     if let Ok(Some(changed_target)) = watcher.get_changed_target() {
         // file is locked so any changes should be disregarded
@@ -165,13 +178,15 @@ fn get_watcher_target_kind(
             config::TargetKind::Local => match &target.data_dest {
                 Some(dest) => {
                     println!("[watcher][changed_target][local] sending target");
-                    return Ok(Some(modules::TargetKind::Local(
+                    let mod_target = modules::TargetKind::Local(
                         target_id.to_owned(),
                         changed_target.full_path,
                         changed_target.relative_path,
                         dest.clone(),
                         changed_target.timestamp,
-                    )));
+                    );
+
+                    return Ok(Some((mod_target, target.change_debounce_sec)));
                 }
                 _ => {
                     return Err(anyhow!(format!(
