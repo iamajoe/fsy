@@ -69,6 +69,9 @@ impl Integrations {
 
         // handle p2p
         if let Some(p2p) = &mut self.int_p2p {
+            // TODO: should probably setup a queue for receiving messages
+            //       and set the remaining on a different thread. if there is a file of
+            //       1gb, we don't want to wait for it
             match p2p.check_events() {
                 Ok((send_to, receive_from)) => {
                     for to in send_to {

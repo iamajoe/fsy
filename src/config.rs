@@ -44,10 +44,12 @@ pub struct Target {
     pub mode: TargetMode,
     pub kind: TargetKind,
     pub src: String,
+    // TODO: still need to implement (dont forget glob)
     pub ignore_nested_files: Option<Vec<String>>,
 
     // timing variables
     pub change_debounce_sec: Option<u64>,
+    // TODO: still need to implement
     pub schedule_cron: Option<String>,
 
     // module data key
