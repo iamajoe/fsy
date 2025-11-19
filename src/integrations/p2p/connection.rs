@@ -202,41 +202,6 @@ impl ConnSendTicket for Connection {
             .await
             .map_err(|e| anyhow::anyhow!("store.blobs().export failed: {e}"))?;
 
-        // let connection = self
-        //     .router
-        //     .endpoint()
-        //     .connect(ticket.node_addr().node_id, iroh_blobs::ALPN)
-        //     .await?;
-        // let mut progress = iroh_blobs::get::request::get_blob(connection, ticket.hash());
-        // let _ = loop {
-        //     match progress.next().await {
-        //         Some(GetBlobItem::Item(item)) => match item {
-        //             BaoContentItem::Leaf(leaf) => {
-        //                 // TODO: we are not moving this yet because the file might be too big
-        //                 //       and we don't want to move it on memory in that case, we
-        //                 //       want to stream it in
-        //                 //       in that case, this write, might not work at all and maybe
-        //                 //       we want to get back to the download but then, how do we handle
-        //                 //       the progress?!
-        //                 write(&abs_path, leaf.data).unwrap();
-        //             }
-        //             BaoContentItem::Parent(parent) => {
-        //                 println!("Parent: {parent:?}");
-        //             }
-        //         },
-        //         Some(GetBlobItem::Done(stats)) => {
-        //             println!("Stats: {} {} {}", stats.mbits(), stats.payload_bytes_read, stats.total_bytes_read());
-        //             break stats;
-        //         }
-        //         Some(GetBlobItem::Error(err)) => {
-        //             anyhow::bail!("Error while streaming blob: {err}");
-        //         }
-        //         None => {
-        //             anyhow::bail!("Stream ended unexpectedly.");
-        //         }
-        //     }
-        // };
-
         // TODO: what about progress?!
 
         Ok(())

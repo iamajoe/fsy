@@ -1,4 +1,4 @@
-mod connection;
+pub mod connection;
 
 use tokio::sync::{mpsc, watch};
 use anyhow::Result;

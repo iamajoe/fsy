@@ -54,7 +54,6 @@ pub struct Target {
     pub data_key: Option<String>,     // s3, dropbox
     pub data_secret: Option<String>,  // s3
     pub data_node_id: Option<String>, // p2p
-    pub data_src_id: Option<String>,  // p2p
     pub data_dest_id: Option<String>, // p2p
     pub data_dest: Option<String>,    // dropbox, local
 }

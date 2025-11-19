@@ -20,7 +20,6 @@ src = "~/.config/**/*"
 ignore_nested_files = ["**/.git"]
 change_debounce_sec = 5
 data_node_id = "{{node_id}}"
-data_src_id = "dofiles_sync_remote"
 data_dest_id = "dofiles_sync_remote"
 
 [[targets]]
