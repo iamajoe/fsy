@@ -53,9 +53,8 @@ pub struct Target {
     // module data key
     pub data_key: Option<String>,     // s3, dropbox
     pub data_secret: Option<String>,  // s3
-    pub data_node_id: Option<String>, // p2p
-    pub data_dest_id: Option<String>, // p2p
-    pub data_dest: Option<String>,    // dropbox, local
+    pub data_node: Option<String>,    // p2p
+    pub data_dest: Option<String>,    // dropbox, local, s3, p2p
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

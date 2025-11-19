@@ -19,8 +19,8 @@ kind = "p2p"
 src = "~/.config/**/*"
 ignore_nested_files = ["**/.git"]
 change_debounce_sec = 5
-data_node_id = "{{node_id}}"
-data_dest_id = "dofiles_sync_remote"
+data_node = "{{node_id}}"
+data_dest = "dofiles_sync_remote"
 
 [[targets]]
 enable = false
@@ -41,3 +41,4 @@ src = "~/.config"
 schedule_cron = "0 0 1 * *"
 data_key = "{{s3_key}}"
 data_secret = "{{s3_secret}}"
+data_dest = "{{s3_bucket}}/backup_config"

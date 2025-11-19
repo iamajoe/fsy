@@ -21,8 +21,6 @@ pub enum IntegrationFromKind {
 }
 
 pub struct Integrations {
-    file_ledger_repo: FileLedgerRepository, // ledger to control locks
-
     int_local: local::Local,
     int_p2p: Option<p2p::P2p>,
 }
@@ -41,8 +39,6 @@ impl Integrations {
         Ok(Self {
             int_local: local::Local::new(false, file_ledger_repo.clone()),
             int_p2p,
-
-            file_ledger_repo,
         })
     }
 
@@ -146,7 +142,7 @@ fn get_full_dest_path(src_relative: &str, dest: &str) -> Result<String> {
     Ok(dest_full)
 }
 
-pub fn should_file_update(
+fn should_file_update(
     file_ledger_repo: &FileLedgerRepository,
     id: &str,
     src_relative: &str,
