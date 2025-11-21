@@ -1,0 +1,36 @@
+name: Build
+
+on:
+  push:
+    branches: [ "main" ]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Install deps
+      run: cargo install cargo-audit cargo-deny cargo-tarpaulin cargo-chef
+
+    - name: Run tests
+      run: cargo test --verbose
+
+    - name: Security check
+      run: cargo audit
+
+    - name: Dependency policy check
+      run: cargo deny check
+
+    - name: Test coverage gate
+      run: cargo tarpaulin --fail-under 80
+      
+    - name: Build
+      run: |
+        cargo chef prepare --recipe-path recipe.json
+        cargo chef cook --recipe-path recipe.json
+        cargo build --release
