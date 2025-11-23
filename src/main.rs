@@ -1,16 +1,6 @@
-mod config;
-mod file_ledger_repository;
-mod integrations;
-mod path_watcher;
-
-use std::time::Duration;
-
-use anyhow::{Result, anyhow};
-use chrono::Utc;
+use anyhow::Result;
+use fsy::core::{config, file_ledger_repository};
 use tokio::sync::{mpsc, watch};
-use tokio::time::sleep;
-
-use self::path_watcher::PathWatcher;
 
 const CHANNEL_BUFFER_SIZE: usize = 1000;
 
@@ -33,20 +23,36 @@ async fn main() -> Result<()> {
     let (is_running_tx, is_running_rx) = watch::channel(true);
     let (changed_target_data_tx, changed_target_data_rx) = mpsc::channel(CHANNEL_BUFFER_SIZE);
 
-    // TODO: need to handle the crons
-    // TODO: need to handle the start process
+    // run start process
+    fsy::run_start_process(&config, &file_repo, changed_target_data_tx.clone()).unwrap();
+
+    // run the cron process
+    let cron_is_running_rx = is_running_rx.clone();
+    let cron_repo = file_repo.clone();
+    let cron_config = config.clone();
+    let cron_changed_target_tx = changed_target_data_tx.clone();
+    tokio::spawn(async move {
+        println!("[cron] starting");
+        fsy::run_cron_process(
+            cron_is_running_rx,
+            &cron_config,
+            &cron_repo,
+            cron_changed_target_tx,
+        );
+    });
 
     // loop target watcher
     let target_watcher_is_running_rx = is_running_rx.clone();
     let target_watcher_repo = file_repo.clone();
     let target_watcher_config = config.clone();
+    let target_watcher_changed_target_tx = changed_target_data_tx.clone();
     tokio::spawn(async move {
         println!("[target_watcher] starting");
-        run_watch_process(
+        fsy::run_watch_process(
             target_watcher_is_running_rx,
             &target_watcher_config,
             &target_watcher_repo,
-            changed_target_data_tx,
+            target_watcher_changed_target_tx,
         )
         .await;
     });
@@ -57,7 +63,7 @@ async fn main() -> Result<()> {
     let integrations_config = config.clone();
     tokio::spawn(async move {
         println!("[integrations] starting");
-        run_integrations_process(
+        fsy::run_integrations_process(
             integrations_is_running_rx,
             &integrations_config,
             &integrations_file_repo,
@@ -77,247 +83,4 @@ async fn main() -> Result<()> {
     is_running_tx.send(false).unwrap();
 
     Ok(())
-}
-
-fn get_target_file_debounce_ms(target: &config::Target) -> u64 {
-    let mut debounce_ms: u64 = 1000;
-    if let Some(debounce) = target.change_debounce_sec {
-        debounce_ms = debounce * 1000;
-    }
-
-    debounce_ms
-}
-
-fn calc_target_unlock_file_debounce(cnf: &config::Config, target: &config::Target) -> u64 {
-    // the file watcher has a debounce for file change
-    // the locking mechanism exists to prevent that change event
-    // to trigger and loop. as such, we want to make sure we unlock
-    // only after the debounce is done
-    // we use *2 because there are 2 loops that can change this
-    // so... 1 loop time per the 2 loops + the target debounce
-    cnf.loop_sleep_time_ms * 2 + get_target_file_debounce_ms(target)
-}
-
-fn changed_target_to_integration_kind(
-    target: &config::Target,
-    changed_target: path_watcher::ChangedTarget,
-) -> Result<Option<(String, integrations::IntegrationToKind)>> {
-    match target.kind {
-        // handle the local
-        config::TargetKind::Local => match &target.data_dest {
-            Some(dest) => {
-                // id, src_full, src_relative, dest, timestamp
-                let mod_target =
-                    integrations::IntegrationToKind::Local(integrations::local::SendToData {
-                        id: target.id.to_owned(),
-                        src_full: changed_target.full_path,
-                        src_relative: changed_target.relative_path,
-                        dest: dest.clone(),
-                        timestamp: changed_target.timestamp,
-                    });
-
-                return Ok(Some((target.id.to_owned(), mod_target)));
-            }
-            _ => {
-                return Err(anyhow!(format!(
-                    "target \"{}\" does not have the required parameters",
-                    &target.id
-                )));
-            }
-        },
-
-        // handle the p2p
-        config::TargetKind::P2p => {
-            let node_id = target.data_node.clone().unwrap_or("".to_owned());
-            let dest_id = target.data_dest.clone().unwrap_or("".to_owned());
-            if node_id.is_empty() || dest_id.is_empty() {
-                return Err(anyhow!(format!(
-                    "target \"{}\" does not have the required parameters",
-                    &target.id
-                )));
-            }
-
-            let mod_target = integrations::IntegrationToKind::P2p(integrations::p2p::SendToData {
-                id: target.id.to_owned(),
-                src_full: changed_target.full_path,
-                src_relative: changed_target.relative_path,
-                node_id,
-                dest_id,
-                timestamp: changed_target.timestamp,
-            });
-
-            return Ok(Some((target.id.to_owned(), mod_target)));
-        }
-        _ => {
-            println!("module not implemented: {}", target.kind);
-        }
-    }
-
-    Ok(None)
-}
-
-async fn run_watch_process(
-    is_running_rx: watch::Receiver<bool>,
-    cnf: &config::Config,
-    file_repo: &file_ledger_repository::FileLedgerRepository,
-    changed_target_data_tx: mpsc::Sender<(String, path_watcher::ChangedTarget)>,
-) {
-    // create the watchers
-    let watchers: Vec<(String, PathWatcher)> = cnf
-        .targets
-        .iter()
-        .filter_map(|t| {
-            if !t.enable
-                || (t.mode != config::TargetMode::Push && t.mode != config::TargetMode::PushPull)
-            {
-                return None;
-            }
-
-            let debounce_ms = get_target_file_debounce_ms(t);
-            let path_watcher = PathWatcher::new(vec![t.src.clone()], debounce_ms).unwrap();
-
-            Some((t.id.clone(), path_watcher))
-        })
-        .collect();
-
-    // loop through the possible changes incoming
-    if watchers.is_empty() {
-        return;
-    }
-
-    println!("[target_watcher] looping");
-    loop {
-        if !*is_running_rx.borrow() {
-            break;
-        }
-
-        // check all watcher to targets
-        let changed_target_data: Vec<(String, path_watcher::ChangedTarget)> = watchers
-            .iter()
-            .filter_map(|(target_id, watcher)| {
-                // check for changed targets
-                if let Ok(Some(changed_target)) = watcher.get_changed_target() {
-                    // file is locked so any changes should be disregarded
-                    let is_locked = file_repo.is_file_locked(&changed_target.full_path).unwrap();
-                    if is_locked {
-                        return None;
-                    }
-
-                    return Some((target_id.to_owned(), changed_target));
-                }
-
-                None
-            })
-            .collect();
-
-        // cache the target kind to be handled
-        for changed_target in changed_target_data {
-            if let Err(e) = changed_target_data_tx.send(changed_target).await {
-                println!("Sending changed target to channel errored: {e}");
-            }
-        }
-
-        sleep(Duration::from_millis(cnf.loop_sleep_time_ms)).await;
-    }
-
-    // close all the watchers
-    for (_, mut watcher) in watchers {
-        watcher.close().unwrap();
-    }
-}
-
-async fn run_integrations_process(
-    is_running_rx: watch::Receiver<bool>,
-    cnf: &config::Config,
-    file_repo: &file_ledger_repository::FileLedgerRepository,
-    mut changed_target_data_rx: mpsc::Receiver<(String, path_watcher::ChangedTarget)>,
-) {
-    // NOTE: only enable p2p if there a target with that kind
-    let has_p2p = cnf
-        .targets
-        .iter()
-        .any(|t| t.enable && t.kind == config::TargetKind::P2p);
-
-    let mut integrations_mod =
-        integrations::Integrations::new(file_repo.to_owned(), has_p2p, &cnf.p2p_secret_key)
-            .await
-            .unwrap();
-
-    loop {
-        if !*is_running_rx.borrow() {
-            break;
-        }
-
-        let mut send_to: Vec<(String, integrations::IntegrationToKind)> = vec![];
-        let mut receive_from: Vec<(String, integrations::IntegrationFromKind)> = vec![];
-
-        // handle the targets incoming from other threads
-        while let Ok((target_id, changed_target)) = changed_target_data_rx.try_recv() {
-            if let Some(target) = cnf.targets.iter().find(|t| t.id == target_id) {
-                match changed_target_to_integration_kind(target, changed_target) {
-                    Ok(Some(data)) => {
-                        send_to.push(data);
-                    }
-                    Err(e) => {
-                        // NOTE: we don't want to mess the process if an error comes in, keep doing it
-                        println!("[target][change] error: {e}");
-                    }
-                    _ => {}
-                }
-            }
-        }
-
-        // handle integration events
-        match integrations_mod.check_events().await {
-            Ok((mut send_to_arr, mut receive_from_arr)) => {
-                send_to.append(&mut send_to_arr);
-                receive_from.append(&mut receive_from_arr);
-            }
-            Err(e) => {
-                // NOTE: we don't want to mess the process if an error comes in, keep doing it
-                println!("[target][check_events] error: {e}");
-            }
-        }
-
-        // handle the sends
-        for (_target_id, send_to_data) in send_to {
-            println!("[target][send] start...");
-
-            let start = Utc::now().timestamp_millis();
-            if let Err(e) = integrations_mod.send_file(send_to_data).await {
-                // NOTE: we don't want to mess the process if an error comes in, keep doing it
-                println!("[target][send] error: {e}");
-            }
-
-            let time_spent = Utc::now().timestamp_millis() - start;
-            println!("[target][send] end ({time_spent}ms)");
-        }
-
-        // handle the receivals
-        for (target_id, receive_from_data) in receive_from {
-            if let Some(target) = cnf.targets.iter().find(|t| t.id == target_id) {
-                println!("[target][receive] start...");
-                let debounce = calc_target_unlock_file_debounce(cnf, target);
-
-                let start = Utc::now().timestamp_millis();
-
-                if let Err(e) = integrations_mod
-                    .receive_file(receive_from_data, debounce)
-                    .await
-                {
-                    // NOTE: we don't want to mess the process if an error comes in, keep doing it
-                    println!("[target][receive] error: {e}");
-                }
-
-                let time_spent = Utc::now().timestamp_millis() - start;
-                println!("[target][receive] end ({time_spent}ms)");
-            }
-        }
-
-        // wait for the next loop iteration
-        sleep(Duration::from_millis(cnf.loop_sleep_time_ms)).await;
-    }
-
-    // close the integrations
-    integrations_mod.close().await.unwrap();
 }

@@ -3,6 +3,8 @@ pub mod connection;
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 
+use crate::core::tree;
+
 pub struct ReceiveFromData {
     pub id: String,
     pub src_full: String,
@@ -21,6 +23,18 @@ pub struct SendToData {
     pub timestamp: DateTime<Utc>,
 }
 
+pub struct RequestFileData {
+    pub id: String,
+    pub src_relative: String,
+    pub node_id: String,
+}
+
+pub struct RequestTreeStatusData {
+    pub id: String,
+    pub node_id: String,
+    pub tree: tree::Tree,
+}
+
 pub struct P2p {
     conn: connection::Connection,
 }
@@ -37,29 +51,19 @@ impl P2p {
         Ok(Self { conn })
     }
 
-    pub fn check_events(&mut self) -> Result<(Vec<SendToData>, Vec<ReceiveFromData>)> {
-        let evts = &self.conn.get_events().unwrap();
-        if evts.is_empty() {
-            return Ok((vec![], vec![]));
-        }
+    pub fn get_evts_to_send(&mut self) -> Result<Vec<SendToData>> {
+        // TODO: ..
+        Ok(vec![])
+    }
 
-        let mut to_data: Vec<SendToData> = vec![];
-        let mut from_data: Vec<ReceiveFromData> = vec![];
+    pub fn get_evts_to_receive(&mut self) -> Result<Vec<ReceiveFromData>> {
+        // TODO: ..
+        Ok(vec![])
+    }
 
-        for evt in evts {
-            println!("[integrations][p2p][check_events] received event to convert");
-            if let connection::ConnEvent::ReceivedMessage(node_id, _raw_msg) = evt {
-                println!("[integrations][p2p][check_events] message received: {node_id}");
-
-                // TODO: need to convert to an integration kind
-                // let action = action::CommAction::from_namespaced_msg(&node_id, &raw_msg);
-
-                // TODO: send it to receive
-                // TODO: should the receive go through a different channel?
-            }
-        }
-
-        Ok((to_data, from_data))
+    pub fn request_tree_status(&self, data: RequestTreeStatusData) -> Result<tree::Tree> {
+        // TODO: ...
+        todo!();
     }
 
     pub async fn send_file(&self, data: SendToData) -> Result<()> {
@@ -70,8 +74,11 @@ impl P2p {
         todo!()
     }
 
+    pub async fn request_file(&mut self, data: RequestFileData) -> Result<()> {
+        todo!()
+    }
+
     pub async fn close(&self) -> Result<()> {
         self.conn.close().await
     }
 }
-

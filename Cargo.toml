@@ -11,6 +11,7 @@ bytes = "1.10.1"
 chrono = "0.4.42"
 crossterm = "0.29.0"
 duckdb = { version = "1.4.1", features = ["bundled", "chrono"] }
+glob = "0.3.3"
 iroh = "0.91.1"
 iroh-blobs = "0.93.0"
 n0-future = "0.3.0"
@@ -21,6 +22,7 @@ serde = { version = "1.0", features = ["derive"] }
 tokio = { version = "1", features = ["full"] }
 toml = "0.8.20"
 
-[toolchain]
-channel = "stable"
-components = ["rust-analyzer", "clippy", "rustfmt"]
+# TODO: enable this. for now it is slowing everything
+# [toolchain]
+# channel = "stable"
+# components = ["rust-analyzer", "clippy", "rustfmt"]
