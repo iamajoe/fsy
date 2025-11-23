@@ -203,40 +203,13 @@ pub async fn run_integrations_process(
             }
         }
 
-        // handle the sends
-        let send_to_data: Vec<integrations::SendToKind> = send_to
-            .into_iter()
-            .filter_map(|(target_id, data)| {
-                if let Some(target) = cnf.targets.iter().find(|t| t.id == target_id) {
-                    if !target.enable
-                        || (target.mode != config::TargetMode::Push
-                            && target.mode != config::TargetMode::PushPull)
-                    {
-                        return None;
-                    }
-
-                    return Some(data);
-                }
-
-                None
-            })
-            .collect();
-        if !send_to_data.is_empty() {
-            println!("[integrations][send] start...");
-            if let Err(e) = integrations_mod.send_files(send_to_data).await {
-                // NOTE: we don't want to mess the process if an error comes in, keep doing it
-                println!("[integrations][send] error: {e}");
-            }
-            println!("[integrations][send] end");
-        }
-
         // handle the receivals
         let receive_from: Vec<(String, integrations::ReceiveFromKind)> =
             match integrations_mod.get_evts_to_receive().await {
                 Ok(arr) => arr,
                 Err(e) => {
                     // NOTE: we don't want to mess the process if an error comes in, keep doing it
-                    println!("[integrations][get_evts_to_send] error: {e}");
+                    println!("[integrations][get_evts_to_receive] error: {e}");
                     vec![]
                 }
             };
@@ -265,6 +238,34 @@ pub async fn run_integrations_process(
                 println!("[integrations][receive] error: {e}");
             }
             println!("[integrations][receive] end");
+        }
+
+        // handle the sends
+        let send_to_data: Vec<integrations::SendToKind> = send_to
+            .into_iter()
+            .filter_map(|(target_id, data)| {
+                if let Some(target) = cnf.targets.iter().find(|t| t.id == target_id) {
+                    if !target.enable
+                        || (target.mode != config::TargetMode::Push
+                            && target.mode != config::TargetMode::PushPull)
+                    {
+                        return None;
+                    }
+
+                    return Some(data);
+                }
+
+                None
+            })
+            .collect();
+
+        if !send_to_data.is_empty() {
+            println!("[integrations][send] start...");
+            if let Err(e) = integrations_mod.send_files(send_to_data).await {
+                // NOTE: we don't want to mess the process if an error comes in, keep doing it
+                println!("[integrations][send] error: {e}");
+            }
+            println!("[integrations][send] end");
         }
 
         // wait for the next loop iteration
